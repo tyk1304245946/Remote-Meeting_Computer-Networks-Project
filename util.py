@@ -8,7 +8,7 @@ import pyaudio
 import cv2
 import pyautogui
 import numpy as np
-from PIL import Image, ImageGrab
+from PIL import Image, ImageGrab, UnidentifiedImageError
 from config import *
 
 
@@ -119,6 +119,9 @@ def capture_camera():
 def capture_voice():
     return streamin.read(CHUNK)
 
+def play_audio(audio_data):
+    streamout.write(audio_data)
+
 
 def compress_image(image, format='JPEG', quality=85):
     """
@@ -129,20 +132,24 @@ def compress_image(image, format='JPEG', quality=85):
     :param quality: int, compress quality (0-100), 85 default
     :return: bytes, compressed image data
     """
-    img_byte_arr = BytesIO()
-    image.save(img_byte_arr, format=format, quality=quality)
-    img_byte_arr = img_byte_arr.getvalue()
-
-    return img_byte_arr
+    buffer = BytesIO()
+    # Save the image to the buffer in the desired format and quality
+    image.save(buffer, format=format, quality=quality)
+    buffer.seek(0)  # Reset buffer position
+    compressed_image_data = buffer.getvalue()
+    buffer.close()
+    return compressed_image_data
 
 
 def decompress_image(image_bytes):
     """
-    decompress bytes to PIL.Image
-    :param image_bytes: bytes, compressed data
-    :return: PIL.Image
+    Decompress bytes to PIL.Image.
     """
     img_byte_arr = BytesIO(image_bytes)
-    image = Image.open(img_byte_arr)
-
+    try:
+        image = Image.open(img_byte_arr)
+        image.load()  # Force loading the image to check if it's valid
+    except UnidentifiedImageError:
+        print("The image file could not be identified.")
+        return None
     return image

@@ -5,6 +5,7 @@ from config import *
 
 class ConferenceClient:
     def __init__(self):
+        # 初始化客户端
         self.is_working = True
         self.server_addr = (SERVER_IP, MAIN_SERVER_PORT)
         self.on_meeting = False
@@ -19,7 +20,9 @@ class ConferenceClient:
 
 
     async def create_conference(self):
+        # 创建会议
         reader, writer = await asyncio.open_connection(*self.server_addr)
+
         writer.write('CREATE_CONFERENCE\n'.encode())
         await writer.drain()
         data = await reader.readline()
@@ -31,14 +34,20 @@ class ConferenceClient:
             self.data_serve_ports = eval(data_ports)
             self.on_meeting = True
             print(f'Conference {self.conference_id} created')
-            await self.start_conference()
+            # await self.start_conference()
+            # self.start_conference()
+            asyncio.create_task(self.start_conference())
+
         else:
             print('Failed to create conference')
+        #####################################
         writer.close()
         await writer.wait_closed()
 
     async def join_conference(self, conference_id):
+        # 加入会议
         reader, writer = await asyncio.open_connection(*self.server_addr)
+       
         writer.write(f'JOIN_CONFERENCE {conference_id}\n'.encode())
         await writer.drain()
         data = await reader.readline()
@@ -50,39 +59,63 @@ class ConferenceClient:
             self.data_serve_ports = eval(data_ports)
             self.on_meeting = True
             print(f'Joined conference {self.conference_id}')
-            await self.start_conference()
+            # await self.start_conference()
+            asyncio.create_task(self.start_conference())
         else:
             print('Failed to join conference')
         writer.close()
         await writer.wait_closed()
 
     async def quit_conference(self):
+        # 退出会议
         self.on_meeting = False
         for task in self.recv_tasks + self.send_tasks:
             task.cancel()
+        cv2.destroyAllWindows()  # 关闭所有 OpenCV 窗口
+        self.recv_tasks.clear()
+        self.send_tasks.clear()
         print('Quit conference')
 
     async def cancel_conference(self):
+        # 取消会议
         if self.on_meeting:
-            self.on_meeting = False
-            # todo: cancle the conference on server side
-            for task in self.recv_tasks + self.send_tasks:
-                task.cancel()
-            print('Conference canceled')
+            reader, writer = await asyncio.open_connection(*self.server_addr)
+            writer.write(f'CANCEL_CONFERENCE {self.conference_id}\n'.encode())
+            await writer.drain()
+            # print('Waiting for response')###todo: 可能阻塞
+            data = await reader.readline()
+            message = data.decode().strip()
+            print('Message: ', message)
+            if message == 'CANCEL_OK':
+                self.on_meeting = False
+                for task in self.recv_tasks + self.send_tasks:
+                    task.cancel()
+                cv2.destroyAllWindows()  # 关闭所有 OpenCV 窗口
+                self.recv_tasks.clear()
+                self.send_tasks.clear()
+                print('Conference canceled')
+            else:
+                print('Failed to cancel conference')
+            writer.close()
+            await asyncio.shield(writer.wait_closed())
         else:
             print('No conference to cancel')
 
-    async def keep_share(self, data_type, port, capture_function, compress=None, fps=10):
+
+    async def keep_share(self, data_type, port, capture_function, compress=None, fps=1):
+        # 持续分享数据
         reader, writer = await asyncio.open_connection(SERVER_IP, port)
+        
         print(f'keep_share Client writer is using port: {writer.get_extra_info("sockname")[1]}')
         try:
             while self.on_meeting:
                 data = capture_function()
-                print(f'Sharing {data_type} on port {port}')
+                # print(f'Sharing {data_type} on port {port}')
                 # print(data)
                 if compress:
                     data = compress(data)
-                print(f'Sending {len(data)} bytes')
+                # print(f'Sending {len(data)} bytes')
+
                 writer.write(data)
                 await writer.drain()
                 # await asyncio.sleep(5)
@@ -96,12 +129,11 @@ class ConferenceClient:
 
     ## todo: implement this function
     def share_switch(self, data_type):
-        '''
-        switch for sharing certain type of data (screen, camera, audio, etc.)
-        '''
+        # 切换分享某种类型的数据（屏幕、摄像头、音频等）
         pass
 
     async def keep_recv(self, data_type, port, decompress=None):
+        # 持续接收数据
         reader, writer = await asyncio.open_connection(SERVER_IP, port)
         print(f'keep_recv Client writer is using port: {writer.get_extra_info("sockname")[1]}')
         # writer = self.writer
@@ -120,9 +152,16 @@ class ConferenceClient:
                     data.extend(chunk)
                     if len(chunk)<131072:
                         break
-                print(f'Received {len(data)} bytes')
+
+                # print(f'Received {len(data)} bytes')
+
+                if len(data) == 20:
+                    # quit when no data received
+                    await self.quit_conference()
+
                 if decompress:
                     data = decompress(data)
+                
                 self.share_data[data_type] = data
         except asyncio.CancelledError:
             pass
@@ -132,6 +171,7 @@ class ConferenceClient:
             await writer.wait_closed()
 
     async def output_data(self):
+        # 输出数据
         while self.on_meeting:
             # print('Output data: ', self.share_data.keys())
             # 显示接收到的数据
@@ -146,7 +186,7 @@ class ConferenceClient:
             display_image = overlay_camera_images(screen_image, camera_images)
             if display_image:
                 img_array = np.array(display_image)
-                cv2.imshow('Conference', cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
+                cv2.imshow('Conference '+str(self.conference_id), cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
                 cv2.waitKey(1)
             else:
                 ## todo: 显示黑框
@@ -162,10 +202,11 @@ class ConferenceClient:
             #     print(self.share_data['text'])
 
     async def start_conference(self):
+        # 启动会议
         # 启动数据接收和发送任务
         for data_type, port in self.data_serve_ports.items():
             if data_type in ['screen', 'camera']:
-                print(f'Start sharing {data_type} on port {port}')
+                # print(f'Start sharing {data_type} on port {port}')
                 send_task = asyncio.create_task(self.keep_share(
                     data_type, port,
                     capture_function=capture_screen if data_type == 'screen' else capture_camera,
@@ -190,10 +231,39 @@ class ConferenceClient:
         self.recv_tasks.append(output_task)
 
         tasks = self.recv_tasks + self.send_tasks
+        # print('Tasks: ', tasks)
         await asyncio.gather(*tasks)
+        # for task in tasks:
+        #     print('Task: ', task)
+        #     asyncio.run(task)
+
+    async def list_conference(self):
+        # 列出会议
+        reader, writer = await asyncio.open_connection(*self.server_addr)
+        writer.write('LIST_CONFERENCE\n'.encode())
+        await writer.drain()
+        data = await reader.readline()
+        message = data.decode().strip()
+        print('Message: ', message)
+        if message.startswith('CONFERENCE_LIST'):
+            conf_list = message.split(' ')
+            if len(conf_list) == 1:
+                print('No conference')
+            else:
+                # conf_list = eval(conf_list)
+                conf_list = conf_list[1:]
+                print('Conference List:')
+                for conf in conf_list:
+                    print("Conference", conf)
+        else:
+            print('Failed to list conference')
+        writer.close()
+        await writer.wait_closed()
 
 
     async def start(self):
+        # 启动客户端
+        loop = asyncio.get_event_loop()
         while True:
             if not self.on_meeting:
                 status = 'Free'
@@ -201,7 +271,10 @@ class ConferenceClient:
                 status = f'OnMeeting-{self.conference_id}'
 
             recognized = True
-            cmd_input = input(f'({status}) Please enter a operation (enter "?" to help): ').strip().lower()
+            print(f'({status}) Please enter a operation (enter "?" to help): ')
+            cmd_input = await loop.run_in_executor(None, input)
+            cmd_input = cmd_input.strip().lower()
+            # cmd_input = input(f'({status}) Please enter a operation (enter "?" to help): ')
             fields = cmd_input.split(maxsplit=1)
             if len(fields) == 1:
                 if cmd_input in ('?', '？'):
@@ -212,6 +285,8 @@ class ConferenceClient:
                     await self.quit_conference()
                 elif cmd_input == 'cancel':
                     await self.cancel_conference()
+                elif cmd_input == 'list':
+                    await self.list_conference()
                 else:
                     recognized = False
             elif len(fields) == 2:
@@ -233,3 +308,45 @@ class ConferenceClient:
 if __name__ == '__main__':
     client = ConferenceClient()
     asyncio.run(client.start())
+
+#     async def start(self):
+#         while True:
+#             if not self.on_meeting:
+#                 status = 'Free'
+#             else:
+#                 status = f'OnMeeting-{self.conference_id}'
+
+#             recognized = True
+#             cmd_input = input(f'({status}) Please enter a operation (enter "?" to help): ')
+#             cmd_input = cmd_input.strip().lower()
+#             fields = cmd_input.split(maxsplit=1)
+#             if len(fields) == 1:
+#                 if cmd_input in ('?', '？'):
+#                     print(HELP)
+#                 elif cmd_input == 'create':
+#                     asyncio.create_task(self.create_conference())
+#                 elif cmd_input == 'quit':
+#                     asyncio.create_task(self.quit_conference())
+#                 elif cmd_input == 'cancel':
+#                     asyncio.create_task(self.cancel_conference())
+#                 else:
+#                     recognized = False
+#             elif len(fields) == 2:
+#                 if fields[0] == 'join':
+#                     input_conf_id = fields[1]
+#                     if input_conf_id.isdigit():
+#                         asyncio.create_task(self.join_conference(int(input_conf_id)))
+#                     else:
+#                         print('[Warn]: Input conference ID must be in digital form')
+#                 else:
+#                     recognized = False
+#             else:
+#                 recognized = False
+
+#             if not recognized:
+#                 print(f'[Warn]: Unrecognized cmd_input {cmd_input}')
+
+# # 修改主程序入口
+# if __name__ == '__main__':
+#     client = ConferenceClient()
+#     asyncio.run(client.start())

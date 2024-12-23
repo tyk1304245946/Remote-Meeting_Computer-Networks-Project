@@ -1,6 +1,9 @@
 import asyncio
 from config import *
-
+from util import decompress_image, overlay_camera_images, play_audio
+import cv2
+import numpy as np
+from datetime import datetime
 
 class ConferenceServer:
     def __init__(self, conference_id, conf_serve_port, data_serve_ports):
@@ -11,6 +14,7 @@ class ConferenceServer:
         self.clients_info = {}  # {client_addr: writer}
         self.client_conns = {}  # {data_type: {client_addr: writer}}
         self.running = True
+        self.data = None
 
     async def handle_data(self, reader, writer, data_type):
         addr = writer.get_extra_info('peername')
@@ -22,7 +26,24 @@ class ConferenceServer:
 
         try:
             while self.running:
-                data = await reader.read(1024*1024)
+                # data = await reader.read(1024*1024)
+                # print(len(data))
+                data = bytearray()
+                while True:
+                    chunk = await reader.read(1024*1024)
+                    print(f'Received {len(chunk)} bytes')
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(chunk)<131072:
+                        break
+                self.data = data
+                print("len: ", len(data))
+                # show the image
+                # output_task = asyncio.create_task(self.output_data())
+                # asyncio.run(output_task)
+
+                # print(f'Received {len(data)} bytes from {addr}')
                 if not data:
                     break
                 # 转发数据给其他客户端
@@ -30,6 +51,7 @@ class ConferenceServer:
                     if client_addr != addr:
                         client_writer.write(data)
                         await client_writer.drain()
+                        print(f'Sending {len(data)} bytes to {client_addr}')
         except ConnectionResetError:
             pass
         finally:
@@ -37,6 +59,46 @@ class ConferenceServer:
             del self.client_conns[data_type][addr]
             writer.close()
             await writer.wait_closed()
+
+    async def handle_text(self, reader, writer, data_type):
+        addr = writer.get_extra_info('peername')
+        port = writer.get_extra_info('sockname')[1]
+        if data_type not in self.client_conns:
+            self.client_conns[data_type] = {}
+        self.client_conns[data_type][addr] = writer
+        print(f'[Data] {data_type} connection from {addr} on port {port}')
+
+        try:
+            while self.running:
+                data = await reader.readline()
+                if not data:
+                    break
+                message = data.decode().strip()
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                full_message = f'[{timestamp}] {addr}: {message}'
+
+                for client_addr, client_writer in self.client_conns[data_type].items():
+                    if client_addr != addr:
+                        client_writer.write(f'{full_message}\n'.encode())
+                        await client_writer.drain()
+                        print(f'Sending {len(data)} bytes to {client_addr}')
+        except ConnectionResetError:
+            pass
+        finally:
+            print(f'[Text] Client disconnected: {addr}')
+            del self.client_conns[data_type][addr]
+            writer.close()
+            await writer.wait_closed()
+
+    # async def output_data(self):
+    #     print('Output data')
+    #     while True:
+    #         screen_image = decompress_image(self.data)
+    #         display_image = overlay_camera_images(screen_image, None)
+    #         img_array = np.array(display_image)
+    #         cv2.imshow('Conference', cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
+    #         cv2.waitKey(1)
+    #         await asyncio.sleep(0.05)
 
     async def handle_client(self, reader, writer):
         addr = writer.get_extra_info('peername')
@@ -74,6 +136,8 @@ class ConferenceServer:
             self.data_servers.append(server)
             print(f'Data server for {data_type} started on port {port}')
 
+
+
         await self.conf_server.serve_forever()
 
     async def stop(self):
@@ -103,6 +167,7 @@ class MainServer:
             'screen': conf_serve_port + 1,
             # 'camera': conf_serve_port + 2,
             # 'audio': conf_serve_port + 3,
+            # 'text': conf_serve_port + 4,
         }
 
         # 创建并启动 ConferenceServer

@@ -72,16 +72,21 @@ class ConferenceClient:
         else:
             print('No conference to cancel')
 
-    async def keep_share(self, data_type, port, capture_function, compress=None, fps=30):
+    async def keep_share(self, data_type, port, capture_function, compress=None, fps=10):
         reader, writer = await asyncio.open_connection(SERVER_IP, port)
+        print(f'keep_share Client writer is using port: {writer.get_extra_info("sockname")[1]}')
         try:
             while self.on_meeting:
                 data = capture_function()
+                print(f'Sharing {data_type} on port {port}')
+                # print(data)
                 if compress:
                     data = compress(data)
+                print(f'Sending {len(data)} bytes')
                 writer.write(data)
                 await writer.drain()
-                await asyncio.sleep(1 / fps)
+                # await asyncio.sleep(5)
+                await asyncio.sleep(1/fps)
         except asyncio.CancelledError:
             pass
         finally:
@@ -98,15 +103,24 @@ class ConferenceClient:
 
     async def keep_recv(self, data_type, port, decompress=None):
         reader, writer = await asyncio.open_connection(SERVER_IP, port)
+        print(f'keep_recv Client writer is using port: {writer.get_extra_info("sockname")[1]}')
+        # writer = self.writer
+        # reader = self.reader
         try:
             while self.on_meeting:
                 # print(f'Receiving {data_type} on port {port}')
                 data = bytearray()
+                print(f'Receiving {data_type} on port {port}')
+                data = bytearray()
                 while True:
-                    chunk = await reader.read(4096)
+                    chunk = await reader.read(1024*1024)
+                    # print(f'Received {len(chunk)} bytes')
                     if not chunk:
                         break
                     data.extend(chunk)
+                    if len(chunk)<131072:
+                        break
+                print(f'Received {len(data)} bytes')
                 if decompress:
                     data = decompress(data)
                 self.share_data[data_type] = data
@@ -144,6 +158,9 @@ class ConferenceClient:
                 play_audio(audio_data)
             await asyncio.sleep(0.05)
 
+            # if 'text' in self.share_data:
+            #     print(self.share_data['text'])
+
     async def start_conference(self):
         # 启动数据接收和发送任务
         for data_type, port in self.data_serve_ports.items():
@@ -160,6 +177,11 @@ class ConferenceClient:
                     data_type, port, capture_function=capture_voice))
                 recv_task = asyncio.create_task(self.keep_recv(
                     data_type, port))
+            # elif data_type == 'text':
+            #     send_task = asyncio.create_task(self.keep_share(
+            #         data_type, port, capture_function=capture_text))
+            #     recv_task = asyncio.create_task(self.keep_recv(
+            #         data_type, port))
             self.send_tasks.append(send_task)
             self.recv_tasks.append(recv_task)
 

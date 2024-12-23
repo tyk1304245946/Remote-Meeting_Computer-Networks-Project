@@ -1,6 +1,9 @@
 import asyncio
 from config import *
-
+from util import decompress_image, overlay_camera_images, play_audio
+import cv2
+import numpy as np
+from datetime import datetime
 
 class ConferenceServer:
     def __init__(self, conference_id, conf_serve_port, data_serve_ports):
@@ -11,6 +14,7 @@ class ConferenceServer:
         self.clients_info = {}  # {client_addr: writer}
         self.client_conns = {}  # {data_type: {client_addr: writer}}
         self.running = True
+        self.data = None
 
     async def handle_data(self, reader, writer, data_type):
         addr = writer.get_extra_info('peername')
@@ -22,7 +26,18 @@ class ConferenceServer:
 
         try:
             while self.running:
-                data = await reader.read(1024*1024)
+                data = bytearray()
+                while True:
+                    chunk = await reader.read(1024*1024)
+                    # print(f'Received {len(chunk)} bytes')
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(chunk)<131072:
+                        break
+                self.data = data
+                # print("len: ", len(data))
+
                 if not data:
                     break
                 # 转发数据给其他客户端
@@ -30,10 +45,41 @@ class ConferenceServer:
                     if client_addr != addr:
                         client_writer.write(data)
                         await client_writer.drain()
+                        # print(f'Sending {len(data)} bytes to {client_addr}')
         except ConnectionResetError:
             pass
         finally:
             print(f'[Data] {data_type} connection closed from {addr}')
+            del self.client_conns[data_type][addr]
+            writer.close()
+            await writer.wait_closed()
+
+    async def handle_text(self, reader, writer, data_type):
+        addr = writer.get_extra_info('peername')
+        port = writer.get_extra_info('sockname')[1]
+        if data_type not in self.client_conns:
+            self.client_conns[data_type] = {}
+        self.client_conns[data_type][addr] = writer
+        print(f'[Data] {data_type} connection from {addr} on port {port}')
+
+        try:
+            while self.running:
+                data = await reader.readline()
+                if not data:
+                    break
+                message = data.decode().strip()
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                full_message = f'[{timestamp}] {addr}: {message}'
+
+                for client_addr, client_writer in self.client_conns[data_type].items():
+                    if client_addr != addr:
+                        client_writer.write(f'{full_message}\n'.encode())
+                        await client_writer.drain()
+                        print(f'Sending {len(data)} bytes to {client_addr}')
+        except ConnectionResetError:
+            pass
+        finally:
+            print(f'[Text] Client disconnected: {addr}')
             del self.client_conns[data_type][addr]
             writer.close()
             await writer.wait_closed()
@@ -74,6 +120,8 @@ class ConferenceServer:
             self.data_servers.append(server)
             print(f'Data server for {data_type} started on port {port}')
 
+
+
         await self.conf_server.serve_forever()
 
     async def stop(self):
@@ -84,6 +132,29 @@ class ConferenceServer:
             server.close()
             await server.wait_closed()
         print('ConferenceServer stopped')
+
+    async def handle_cancel_conference(self, conference_id):
+        print(f'Canceling conference {conference_id}')
+        # print(self.client_conns)
+
+        if conference_id == self.conference_id:
+            for data_type in self.client_conns:
+ 
+                items = list(self.client_conns[data_type].items())  # 创建字典项的副本
+                for addr, writer in items:
+                    # print("**********************")
+                    # print(addr)
+                    # print(writer)
+                    writer.write('CONFERENCE_CANCELED\n'.encode())
+                    await writer.drain()
+                    writer.close()
+                    await writer.wait_closed()
+            self.client_conns.clear()
+            self.clients_info.clear()
+            self.running = False
+            print(f'Conference {conference_id} canceled')
+        else:
+            print(f'Conference {conference_id} not found')
 
 
 class MainServer:
@@ -103,6 +174,7 @@ class MainServer:
             'screen': conf_serve_port + 1,
             # 'camera': conf_serve_port + 2,
             # 'audio': conf_serve_port + 3,
+            # 'text': conf_serve_port + 4,
         }
 
         # 创建并启动 ConferenceServer
@@ -129,6 +201,36 @@ class MainServer:
         writer.close()
         await writer.wait_closed()
 
+    async def handle_cancel_conference(self, _, writer, conference_id):
+        writer.write('CANCEL_OK\n'.encode())
+        await writer.drain()
+        if conference_id in self.conference_servers:
+            conference_server = self.conference_servers[conference_id]
+            self.conference_servers[conference_id] = None
+            await conference_server.handle_cancel_conference(conference_id)
+            response = 'CANCEL_OK\n'
+            writer.write(response.encode())
+            await writer.drain()
+        else:
+            response = 'ERROR Conference not found\n'
+            writer.write(response.encode())
+            await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    # get conference list
+    async def handle_get_conference_list(self, _, writer):
+        response = 'CONFERENCE_LIST'
+        print(self.conference_servers)
+        for conference_id, conference_server in self.conference_servers.items():
+            if conference_server is not None:
+                response += f' {conference_id}'
+        response += '\n'
+        writer.write(response.encode())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
     async def request_handler(self, reader, writer):
         data = await reader.readline()
         message = data.decode().strip()
@@ -138,6 +240,15 @@ class MainServer:
         elif message.startswith('JOIN_CONFERENCE'):
             _, conf_id = message.split()
             await self.handle_join_conference(reader, writer, int(conf_id))
+        # elif message == 'QUIT':
+        #     await self.stop_all_conferences()
+        #     writer.close()
+        #     await writer.wait_closed()
+        elif message.startswith('CANCEL_CONFERENCE'):
+            _, conf_id = message.split()
+            await self.handle_cancel_conference(reader, writer, int(conf_id))
+        elif message == 'LIST_CONFERENCE':
+            await self.handle_get_conference_list(reader, writer)
         else:
             writer.write('ERROR Invalid command\n'.encode())
             await writer.drain()

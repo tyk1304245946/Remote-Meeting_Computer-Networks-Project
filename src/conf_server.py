@@ -14,6 +14,8 @@ class ConferenceServer:
         self.running = True
 
     async def handle_data(self, data_type, server_socket):
+        if data_type not in self.client_conns:
+            self.client_conns[data_type] = {}
         print(f"Listening for {data_type} on port {self.data_serve_ports[data_type]}")
         while self.running:
             data, addr = server_socket.recvfrom(4096)

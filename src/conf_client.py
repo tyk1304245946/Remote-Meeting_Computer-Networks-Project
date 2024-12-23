@@ -1,4 +1,5 @@
 import asyncio
+import socket
 from util import *
 from config import *
 
@@ -73,21 +74,21 @@ class ConferenceClient:
             print('No conference to cancel')
 
     async def keep_share(self, data_type, port, capture_function, compress=None, fps=30):
-        reader, writer = await asyncio.open_connection(SERVER_IP, port)
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
+        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
         try:
             while self.on_meeting:
                 data = capture_function()
                 if compress:
                     data = compress(data)
-                writer.write(data)
-                await writer.drain()
+                client_socket.sendto(data, (SERVER_IP, port))
                 await asyncio.sleep(1 / fps)
         except asyncio.CancelledError:
             pass
         finally:
             print(f'Stop sharing {data_type} on port {port}')
-            writer.close()
-            await writer.wait_closed()
+            client_socket.close()
 
     ## todo: implement this function
     def share_switch(self, data_type):
@@ -97,13 +98,16 @@ class ConferenceClient:
         pass
 
     async def keep_recv(self, data_type, port, decompress=None):
-        reader, writer = await asyncio.open_connection(SERVER_IP, port)
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket.bind((SERVER_IP, port))
+        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
+        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
         try:
             while self.on_meeting:
                 # print(f'Receiving {data_type} on port {port}')
                 data = bytearray()
                 while True:
-                    chunk = await reader.read(4096)
+                    chunk, _ = client_socket.recvfrom(4096)
                     if not chunk:
                         break
                     data.extend(chunk)
@@ -114,8 +118,7 @@ class ConferenceClient:
             pass
         finally:
             print(f'Stop receiving {data_type} on port {port}')
-            writer.close()
-            await writer.wait_closed()
+            client_socket.close()
 
     async def output_data(self):
         while self.on_meeting:

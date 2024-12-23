@@ -1,6 +1,7 @@
 import asyncio
 from config import *
-
+import asyncio
+import socket
 
 class ConferenceServer:
     def __init__(self, conference_id, conf_serve_port, data_serve_ports):
@@ -12,78 +13,54 @@ class ConferenceServer:
         self.client_conns = {}  # {data_type: {client_addr: writer}}
         self.running = True
 
-    async def handle_data(self, reader, writer, data_type):
-        addr = writer.get_extra_info('peername')
-        port = writer.get_extra_info('sockname')[1]
-        if data_type not in self.client_conns:
-            self.client_conns[data_type] = {}
-        self.client_conns[data_type][addr] = writer
-        print(f'[Data] {data_type} connection from {addr} on port {port}')
-
-        try:
-            while self.running:
-                data = await reader.read(1024*1024)
-                if not data:
-                    break
-                # 转发数据给其他客户端
-                for client_addr, client_writer in self.client_conns[data_type].items():
+    async def handle_data(self, data_type, server_socket):
+        print(f"Listening for {data_type} on port {self.data_serve_ports[data_type]}")
+        while self.running:
+            data, addr = server_socket.recvfrom(4096)
+            if data:
+                # Forward data to other clients
+                for client_addr in self.client_conns[data_type]:
                     if client_addr != addr:
-                        client_writer.write(data)
-                        await client_writer.drain()
-        except ConnectionResetError:
-            pass
-        finally:
-            print(f'[Data] {data_type} connection closed from {addr}')
-            del self.client_conns[data_type][addr]
-            writer.close()
-            await writer.wait_closed()
+                        server_socket.sendto(data, client_addr)
 
-    async def handle_client(self, reader, writer):
-        addr = writer.get_extra_info('peername')
-        self.clients_info[addr] = writer
-        print(f'[Conference] Client connected: {addr}')
-
-        try:
-            while self.running:
-                data = await reader.readline()
-                if not data:
-                    break
+    async def handle_client(self, server_socket):
+        print(f"Conference server listening on port {self.conf_serve_port}")
+        while self.running:
+            data, addr = server_socket.recvfrom(1024)
+            if data:
                 message = data.decode().strip()
-                print(f'Received from {addr}: {message}')
-                # 处理会议中的请求（如退出等）
+                print(f"Received from {addr}: {message}")
+                # Handle messages like 'quit'
                 if message == 'quit':
                     break
-        except ConnectionResetError:
-            pass
-        finally:
-            print(f'[Conference] Client disconnected: {addr}')
-            del self.clients_info[addr]
-            writer.close()
-            await writer.wait_closed()
+                self.clients_info[addr] = message
 
     async def start(self):
         # 启动会议控制服务器
         self.conf_server = await asyncio.start_server(self.handle_client, SERVER_IP, self.conf_serve_port)
         print(f'ConferenceServer started on port {self.conf_serve_port}')
 
-        # 启动数据服务器
-        self.data_servers = []
+        # Create UDP sockets for data servers
+        data_server_sockets = {}
         for data_type, port in self.data_serve_ports.items():
-            server = await asyncio.start_server(
-                lambda r, w, dt=data_type: self.handle_data(r, w, dt), SERVER_IP, port)
-            self.data_servers.append(server)
-            print(f'Data server for {data_type} started on port {port}')
+            data_server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            data_server_socket.bind((SERVER_IP, port))
 
-        await self.conf_server.serve_forever()
+            data_server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
+            data_server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
 
-    async def stop(self):
-        self.running = False
-        self.conf_server.close()
-        await self.conf_server.wait_closed()
-        for server in self.data_servers:
-            server.close()
-            await server.wait_closed()
-        print('ConferenceServer stopped')
+            data_server_sockets[data_type] = data_server_socket
+
+        # Start conference server and data servers handling in parallel
+        # tasks = [
+        #     asyncio.create_task(self.handle_client(conf_server_socket))
+        # ]
+        tasks = []
+        for data_type, server_socket in data_server_sockets.items():
+            tasks.append(asyncio.create_task(self.handle_data(data_type, server_socket)))
+
+        # Wait for the servers to stop
+        await asyncio.gather(*tasks)
 
 
 class MainServer:

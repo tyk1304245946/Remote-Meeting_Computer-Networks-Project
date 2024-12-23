@@ -30,6 +30,7 @@ class ConferenceServer:
                 while True:
                     chunk = await reader.read(1024*1024)
                     # print(f'Received {len(chunk)} bytes')
+
                     if not chunk:
                         break
                     data.extend(chunk)
@@ -37,6 +38,7 @@ class ConferenceServer:
                         break
                 self.data = data
                 # print("len: ", len(data))
+
 
                 if not data:
                     break
@@ -46,6 +48,7 @@ class ConferenceServer:
                         client_writer.write(data)
                         await client_writer.drain()
                         # print(f'Sending {len(data)} bytes to {client_addr}')
+
         except ConnectionResetError:
             pass
         finally:

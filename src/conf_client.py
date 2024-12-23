@@ -101,6 +101,7 @@ class ConferenceClient:
         else:
             print('No conference to cancel')
 
+
     async def keep_share(self, data_type, port, capture_function, compress=None, fps=1):
         # 持续分享数据
         reader, writer = await asyncio.open_connection(SERVER_IP, port)
@@ -114,6 +115,7 @@ class ConferenceClient:
                 if compress:
                     data = compress(data)
                 # print(f'Sending {len(data)} bytes')
+
                 writer.write(data)
                 await writer.drain()
                 # await asyncio.sleep(5)
@@ -140,6 +142,8 @@ class ConferenceClient:
             while self.on_meeting:
                 # print(f'Receiving {data_type} on port {port}')
                 data = bytearray()
+                print(f'Receiving {data_type} on port {port}')
+                data = bytearray()
                 while True:
                     chunk = await reader.read(1024*1024)
                     # print(f'Received {len(chunk)} bytes')
@@ -148,6 +152,7 @@ class ConferenceClient:
                     data.extend(chunk)
                     if len(chunk)<131072:
                         break
+
                 # print(f'Received {len(data)} bytes')
 
                 if len(data) == 20:

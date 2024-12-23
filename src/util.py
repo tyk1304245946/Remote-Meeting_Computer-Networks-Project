@@ -13,6 +13,7 @@ from config import *
 
 
 # audio setting
+## todo: 检测是否有可用的麦克风
 FORMAT = pyaudio.paInt16
 audio = pyaudio.PyAudio()
 streamin = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)

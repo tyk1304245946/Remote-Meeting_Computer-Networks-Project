@@ -1,5 +1,6 @@
 import asyncio
 import socket
+import struct
 from util import *
 from config import *
 
@@ -17,6 +18,7 @@ class ConferenceClient:
         self.send_tasks = []
         # 连接服务器
         self.loop = asyncio.get_event_loop()
+        self.received_chunks = {}
 
 
     async def create_conference(self):
@@ -73,20 +75,51 @@ class ConferenceClient:
         else:
             print('No conference to cancel')
 
-    async def keep_share(self, data_type, port, capture_function, compress=None, fps=30):
+
+
+    async def keep_share(self, data_type, port, capture_function, compress=None, fps=1):
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
-        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
+        # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
+        # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
+        client_socket.sendto(b'Hello', (SERVER_IP, port))
+        print(f'Start sharing {data_type} on port {port}')
+
+
+        async def pack_chunk(chunk_index, total_chunks, chunk_data):
+            # Use struct to pack chunk_index and total_chunks as unsigned integers (4 bytes each)
+            # Then append the chunk_data (already in bytes)
+            header = struct.pack('!II', chunk_index, total_chunks)  # '!II' means two unsigned integers in network byte order
+            return header + chunk_data  # Concatenate header with chunk data
+
         try:
             while self.on_meeting:
                 data = capture_function()
+                print(self.on_meeting)
                 if compress:
                     data = compress(data)
-                client_socket.sendto(data, (SERVER_IP, port))
+
+                # Split data into chunks
+                data_chunks = [data[i:i + MAX_UDP_PACKET_SIZE] for i in range(0, len(data), MAX_UDP_PACKET_SIZE)]
+                total_chunks = len(data_chunks)
+
+                print(total_chunks)
+                for i, chunk in enumerate(data_chunks):
+                    # Add metadata to each chunk: (chunk_index, total_chunks)
+                    print(i)
+                    chunk_with_metadata = await pack_chunk(i, total_chunks, chunk)
+                    client_socket.sendto(chunk_with_metadata, (SERVER_IP, port))
+                print(f'Sent {data_type} on port {port}')
+
                 await asyncio.sleep(1 / fps)
-        except asyncio.CancelledError:
-            pass
+
+                print(2)
+        except Exception as e:
+            print(e)
+        # except asyncio.CancelledError:
+        #     pass
         finally:
+            print(self.on_meeting)
             print(f'Stop sharing {data_type} on port {port}')
             client_socket.close()
 
@@ -97,20 +130,47 @@ class ConferenceClient:
         '''
         pass
 
+    async def handle_received_chunk(self, data, data_type):
+        # Extract metadata: chunk_index, total_chunks, chunk_data
+        chunk_index, total_chunks, chunk_data = data
+
+        if data_type not in self.received_chunks:
+            self.received_chunks[data_type] = {}
+
+        # Store the chunk data
+        self.received_chunks[data_type][chunk_index] = chunk_data
+
+        # Check if all chunks for this data_type have been received
+        if len(self.received_chunks[data_type]) == total_chunks:
+            # Reassemble the data by combining the chunks in order
+            all_data = b''.join(self.received_chunks[data_type][i] for i in range(total_chunks))
+
+            # Handle the reassembled data (e.g., process or store it)
+            print(f'Reassembled data for {data_type}: {all_data}')
+
+            # Clear the chunks for this data_type after reassembly
+            del self.received_chunks[data_type]
+
     async def keep_recv(self, data_type, port, decompress=None):
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        client_socket.bind((SERVER_IP, port))
-        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
-        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
+        print(f'Start receiving {data_type} on port {port}')
+        # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
+        # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
+        client_socket.sendto(b'Hello', (SERVER_IP, port))
         try:
             while self.on_meeting:
                 # print(f'Receiving {data_type} on port {port}')
                 data = bytearray()
                 while True:
-                    chunk, _ = client_socket.recvfrom(4096)
+                    chunk, _ = client_socket.recvfrom(65536)
+                    await self.handle_received_chunk(chunk, data_type)
+                    print(chunk)
                     if not chunk:
                         break
                     data.extend(chunk)
+                    if len(chunk) < 1301072:
+                        break
                 if decompress:
                     data = decompress(data)
                 self.share_data[data_type] = data

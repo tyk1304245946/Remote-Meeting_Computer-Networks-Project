@@ -9,6 +9,8 @@ TIMEOUT_SERVER = 5
 # DGRAM_SIZE = 1500  # UDP
 LOG_INTERVAL = 2
 
+MAX_UDP_PACKET_SIZE = 65000  # Maximum UDP packet size
+
 CHUNK = 1024
 CHANNELS = 1  # Channels for audio capture
 RATE = 44100  # Sampling rate for audio capture

@@ -14,28 +14,59 @@ class ConferenceServer:
         self.running = True
 
     async def handle_data(self, data_type, server_socket):
+        data, addr1 = server_socket.recvfrom(65536)
+        port = addr1[1]
         if data_type not in self.client_conns:
             self.client_conns[data_type] = {}
-        print(f"Listening for {data_type} on port {self.data_serve_ports[data_type]}")
-        while self.running:
-            data, addr = server_socket.recvfrom(4096)
-            if data:
-                # Forward data to other clients
-                for client_addr in self.client_conns[data_type]:
-                    if client_addr != addr:
-                        server_socket.sendto(data, client_addr)
+        self.client_conns[data_type][addr1] = server_socket
+        print(len(data))
+        print(f'[Data] {data_type} connection from {addr1} on port {port}')
 
-    async def handle_client(self, server_socket):
-        print(f"Conference server listening on port {self.conf_serve_port}")
-        while self.running:
-            data, addr = server_socket.recvfrom(1024)
-            if data:
+        try:
+            while self.running:
+                data, addr = server_socket.recvfrom(65536)
+                if addr != addr1:
+                    del self.client_conns[data_type][addr1]
+                    addr1 = addr
+                    self.client_conns[data_type][addr1] = server_socket
+                print(len(data))
+                print(f"Received {data_type} from {addr}")
+                print(self.client_conns)
+                if data:
+                    # Forward data to other clients
+                    for client_addr in self.client_conns[data_type]:
+                        # if client_addr != addr:
+                        server_socket.sendto(data, client_addr)
+        except ConnectionResetError:
+            pass
+        finally:
+            print(f'[Data] {data_type} connection closed: {addr}')
+            del self.client_conns[data_type][addr]
+            server_socket.close()
+            await server_socket.wait_closed()
+
+    async def handle_client(self, reader, writer):
+        addr = writer.get_extra_info('peername')
+        self.clients_info[addr] = writer
+        print(f'[Conference] Client connected: {addr}')
+
+        try:
+            while self.running:
+                data = await reader.readline()
+                if not data:
+                    break
                 message = data.decode().strip()
-                print(f"Received from {addr}: {message}")
-                # Handle messages like 'quit'
+                print(f'Received from {addr}: {message}')
+                # 处理会议中的请求（如退出等）
                 if message == 'quit':
                     break
-                self.clients_info[addr] = message
+        except ConnectionResetError:
+            pass
+        finally:
+            print(f'[Conference] Client disconnected: {addr}')
+            del self.clients_info[addr]
+            writer.close()
+            await writer.wait_closed()
 
     async def start(self):
         # 启动会议控制服务器

@@ -134,7 +134,7 @@ class MainServer:
         conf_serve_port = MAIN_SERVER_PORT + conference_id * 10
         data_serve_ports = {
             'screen': conf_serve_port + 1,
-            # 'camera': conf_serve_port + 2,
+            'camera': conf_serve_port + 2,
             'audio': conf_serve_port + 3,
         }
 

@@ -7,12 +7,12 @@ from config import *
 
 
 class RTPClientProtocol(asyncio.DatagramProtocol):
-    def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=30, decompress=None):
+    def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=30, decompress=None, share_data=None):
         self.host = host
         self.port = port
         self.transport = None
         self.datatype = datatype
-        self.share_data = {}
+        self.share_data = share_data
         self.capture_function = capture_function
         self.compress = compress
         self.decompress = decompress
@@ -173,7 +173,7 @@ class ConferenceClient:
         # 连接服务器
         # self.loop = asyncio.get_event_loop()
         self.received_chunks = {}
-
+        self.share_data = {}
 
     async def create_conference(self):
         reader, writer = await asyncio.open_connection(*self.server_addr)
@@ -246,7 +246,9 @@ class ConferenceClient:
                                                 capture_function=capture_screen
                                                     if data_type == 'screen' else capture_camera,
                                                 compress=compress_image,
-                                                decompress=decompress_image)
+                                                decompress=decompress_image, 
+                                                share_data=self.share_data)
+
                 # send_task = asyncio.create_task(self.keep_share(
                 #     data_type, port,
                     # capture_function=capture_screen if data_type == 'screen' else capture_camera,
@@ -257,7 +259,8 @@ class ConferenceClient:
                 print(f'Start sharing {data_type} on port {port}')
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
                                                 data_type,
-                                                capture_function=capture_voice)
+                                                capture_function=capture_voice, 
+                                                share_data=self.share_data)
                 # send_task = asyncio.create_task(self.keep_share(
                 #     data_type, port, capture_function=capture_voice))
                 # recv_task = asyncio.create_task(self.keep_recv(

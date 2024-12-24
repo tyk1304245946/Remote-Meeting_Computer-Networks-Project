@@ -52,49 +52,47 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data, addr):
-        # print(f"Received data from {addr}")
-        # RTP头12字节
         header = data[:12]
-        # print(f"Received data from {addr}: {header}")
         payload = data[12:]
 
-        # Extract chunk information from the header (after RTP header)
+        # Extract chunk information
         chunk_info = struct.unpack('!HH', payload[:4])  # First 4 bytes for chunk index and total chunks
         chunk_index, total_chunks = chunk_info
-        
 
         user_info = payload[4:8]
         user_name = USER_NAME + user_info.decode()
-        # print(f"Received data from {addr}: {user_name}")
+        print(f"Received data from {addr}: {user_name}")
+
+        # Extract frame ID (assuming it's part of the header)
+        frame_id = struct.unpack('!I', header[4:8])[0]  # Example: 4 bytes in header for frame ID
 
         payload_data = payload[8:]
 
-        # print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
+        if user_name not in self.frame_chunks:
+            self.frame_chunks[user_name] = {}
 
-        # Add the chunk to the dictionary
-        if chunk_index not in self.frame_chunks:
-            self.frame_chunks[chunk_index] = []
+        # Store chunk in a nested structure: frames[user_name][frame_id][chunk_index]
+        if chunk_index not in self.frame_chunks[user_name]:
+            self.frame_chunks[user_name][chunk_index] = []
 
-        self.frame_chunks[chunk_index].append(payload_data)
+        self.frame_chunks[user_name][chunk_index].append(payload_data)
 
-        # If we have received all chunks for a frame, reassemble and process the frame
-        if len(self.frame_chunks) >= total_chunks:
-            # try:
-            # Reassemble all chunks into the full payload (frame)
-            full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
-            # print(f"Reassembled full frame of size {len(full_frame)} bytes")
-            self.frame_chunks.clear()
-            # print(f"frame_chunks {self.frame_chunks}")
-            try:
-                if self.decompress:
-                    full_frame = self.decompress(full_frame)
-                self.share_data[self.datatype] = full_frame
-            except Exception as e:
-                self.frame_chunks.clear()
-            # Clear the frame chunks for the next frame
-            # self.frame_chunks.clear()
-            # except Exception as e:
-            #     self.frame_chunks.clear()
+        # 检查是否收到所有块
+        if len(self.frame_chunks[user_name]) >= total_chunks:
+            # 重新组装完整的帧
+            full_frame = b''.join(
+                b''.join(self.frame_chunks[user_name][i]) for i in range(1, total_chunks + 1)
+            )
+
+            # 清除该源的frame_chunks
+            del self.frame_chunks[user_name]
+
+            if self.decompress:
+                full_frame = self.decompress(full_frame)
+
+            if self.datatype not in self.share_data:
+                self.share_data[self.datatype] = {}
+            self.share_data[self.datatype][user_name] = full_frame
 
     async def send_rtp_packet(self, payload, chunk_index, total_chunks):
         """构建并发送 RTP 数据包，支持分块传输"""
@@ -161,7 +159,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
                 # 显示接收到的数据
                 # print(self.share_data)
                 if 'screen' in self.share_data:
-                    screen_image = self.share_data['screen']
+                    screen_image = self.share_data['screen'][user]
                 else:
                     screen_image = None
                 if 'camera' in self.share_data:

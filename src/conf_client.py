@@ -156,7 +156,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             if 'audio' in self.share_data:
                 audio_data = self.share_data['audio']
                 play_audio(audio_data)
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(1 / self.fps)
 
 class ConferenceClient:
     def __init__(self):
@@ -242,17 +242,17 @@ class ConferenceClient:
             print(f'Start sharing {data_type} on port {port}')
             if data_type == 'screen':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
-                                                data_type, fps=5,
+                                                data_type, fps=15,
                                                 capture_function=capture_screen,
                                                 compress=compress_screen,
                                                 decompress=decompress_screen,
                                                 share_data=self.share_data)
             elif data_type == 'camera':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
-                                                data_type, fps=10,
+                                                data_type, fps=15,
                                                 capture_function=capture_camera,
-                                                compress=compress_image,
-                                                decompress=decompress_image,
+                                                compress=compress_screen,
+                                                decompress=decompress_screen,
                                                 share_data=self.share_data)
 
             elif data_type == 'audio':

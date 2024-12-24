@@ -65,11 +65,11 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
 
         user_info = payload[4:8]
         user_name = USER_NAME + user_info.decode()
-        print(f"Received data from {addr}: {user_name}")
+        # print(f"Received data from {addr}: {user_name}")
 
         payload_data = payload[8:]
 
-        print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
+        # print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
 
         # Add the chunk to the dictionary
         if chunk_index not in self.frame_chunks:
@@ -82,13 +82,15 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             # try:
             # Reassemble all chunks into the full payload (frame)
             full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
-            print(f"Reassembled full frame of size {len(full_frame)} bytes")
+            # print(f"Reassembled full frame of size {len(full_frame)} bytes")
             self.frame_chunks.clear()
-            print(f"frame_chunks {self.frame_chunks}")
-            if self.decompress:
-                full_frame = self.decompress(full_frame)
-            self.share_data[self.datatype] = full_frame
-
+            # print(f"frame_chunks {self.frame_chunks}")
+            try:
+                if self.decompress:
+                    full_frame = self.decompress(full_frame)
+                self.share_data[self.datatype] = full_frame
+            except Exception as e:
+                self.frame_chunks.clear()
             # Clear the frame chunks for the next frame
             # self.frame_chunks.clear()
             # except Exception as e:
@@ -157,7 +159,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
                 #     self.share_data[self.datatype][user] = None
                 # print('Output data: ', self.share_data.keys())
                 # 显示接收到的数据
-                print(self.share_data)
+                # print(self.share_data)
                 if 'screen' in self.share_data:
                     screen_image = self.share_data['screen']
                 else:
@@ -203,7 +205,7 @@ class RTCPClientProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data, addr):
         self.conference_client.user_list = data.decode().strip().split(' ')
-        print(f"Received user list: {self.conference_client.user_list}")
+        # print(f"Received user list: {self.conference_client.user_list}")
 
 class ConferenceClient:
     def __init__(self):
@@ -420,7 +422,8 @@ class ConferenceClient:
         writer = self.text_writer
         writer.write(text.encode())
         print(f'text_me: {text}')
-        print("****", self.user_list)
+        # TODO: user_list为什么有多余的user?
+        # print("****", self.user_list)
         # await writer.drain()
         # writer.close()
         # await writer.wait_closed()

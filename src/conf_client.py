@@ -7,7 +7,7 @@ from config import *
 
 
 class RTPClientProtocol(asyncio.DatagramProtocol):
-    def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=30, decompress=None, share_data=None):
+    def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=10, decompress=None, share_data=None):
         self.host = host
         self.port = port
         self.transport = None
@@ -239,42 +239,31 @@ class ConferenceClient:
     async def start_conference(self):
         # 启动数据接收和发送任务
         for data_type, port in self.data_serve_ports.items():
-            if data_type in ['screen', 'camera']:
-                print(f'Start sharing {data_type} on port {port}')
+            print(f'Start sharing {data_type} on port {port}')
+            if data_type == 'screen':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
-                                                data_type,
-                                                capture_function=capture_screen
-                                                    if data_type == 'screen' else capture_camera,
+                                                data_type, fps=5,
+                                                capture_function=capture_screen,
+                                                compress=compress_screen,
+                                                decompress=decompress_screen,
+                                                share_data=self.share_data)
+            elif data_type == 'camera':
+                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
+                                                data_type, fps=10,
+                                                capture_function=capture_camera,
                                                 compress=compress_image,
-                                                decompress=decompress_image, 
+                                                decompress=decompress_image,
                                                 share_data=self.share_data)
 
-                # send_task = asyncio.create_task(self.keep_share(
-                #     data_type, port,
-                    # capture_function=capture_screen if data_type == 'screen' else capture_camera,
-                    # compress=compress_image))
-                # recv_task = asyncio.create_task(self.keep_recv(
-                #     data_type, port, decompress=decompress_image))
             elif data_type == 'audio':
-                print(f'Start sharing {data_type} on port {port}')
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
-                                                data_type,
-                                                capture_function=capture_voice, 
+                                                data_type, fps=50,
+                                                capture_function=capture_voice,
                                                 share_data=self.share_data)
-                # send_task = asyncio.create_task(self.keep_share(
-                #     data_type, port, capture_function=capture_voice))
-                # recv_task = asyncio.create_task(self.keep_recv(
-                #     data_type, port))
-                # await data_server.start_client()
             self.tasks.append(asyncio.create_task(data_server.start_client()))
             self.data_server.append(data_server)
-        
-        await asyncio.gather(*self.tasks)
 
-            # self.send_tasks.append(send_task)
-            # self.recv_tasks.append(recv_task)
-        # while self.on_meeting:
-        #     await asyncio.sleep(1)
+        await asyncio.gather(*self.tasks)
 
     async def start(self):
         while True:

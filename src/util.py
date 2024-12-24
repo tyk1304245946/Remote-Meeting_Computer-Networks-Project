@@ -10,6 +10,8 @@ import pyautogui
 import numpy as np
 from PIL import Image, ImageGrab, UnidentifiedImageError
 from config import *
+import subprocess
+from PIL import Image
 
 
 # audio setting
@@ -146,4 +148,75 @@ def decompress_image(image_bytes):
     except UnidentifiedImageError:
         print("The image file could not be identified.")
         return None
+    return image
+
+def compress_screen(frame, quality=50):
+    """
+    Compress image using ffmpeg's h.264 encoding and output bytes.
+
+    :param frame: PIL.Image, input image
+    :param quality: int, CRF value for compression (0-51), lower means better quality
+    :return: bytes, compressed image data
+    """
+
+    # Convert PIL Image to raw bytes
+    raw_image = np.array(frame)
+    height, width, _ = raw_image.shape
+    raw_bytes = raw_image.tobytes()
+
+    # ffmpeg command for h.264 encoding
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-y',
+        '-f', 'rawvideo',
+        '-pixel_format', 'rgb24',
+        '-video_size', f'{width}x{height}',
+        '-i', 'pipe:0',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', str(quality),
+        '-f', 'h264',
+        'pipe:1'
+    ]
+
+    process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = process.communicate(input=raw_bytes)
+
+    if process.returncode != 0:
+        raise Exception(f'FFmpeg encoding failed: {err.decode()}')
+
+    return out
+
+def decompress_screen(image_bytes, width=1920, height=1080):
+    """
+    Decompress h.264 bytes to PIL.Image.
+
+    :param image_bytes: bytes, compressed image data
+    :param width: int, width of the image
+    :param height: int, height of the image
+    :return: PIL.Image, decompressed image
+    """
+
+    # ffmpeg command for h.264 decoding
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-y',
+        '-f', 'h264',
+        '-i', 'pipe:0',
+        '-f', 'rawvideo',
+        '-pixel_format', 'rgb24',
+        '-video_size', f'{width}x{height}',
+        'pipe:1'
+    ]
+
+    process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = process.communicate(input=image_bytes)
+
+    if process.returncode != 0:
+        print("The image file could not be identified:", err.decode())
+        return None
+
+    # Convert raw bytes to PIL Image
+    image_array = np.frombuffer(out, np.uint8).reshape((height, width, 3))
+    image = Image.fromarray(image_array, 'RGB')
     return image

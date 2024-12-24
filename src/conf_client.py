@@ -16,12 +16,12 @@ from tkinter import Tk, Label, Entry, Button, Text, StringVar, END
 from datetime import datetime
 
 class RTPClientProtocol(asyncio.DatagramProtocol):
-    def __init__(self, host, port, conference_id, username, datatype, capture_function, compress=None, fps=10, decompress=None, share_data=None):
+    def __init__(self, host, port, conference_id, username, conference_client, datatype, capture_function, compress=None, fps=10, decompress=None):
         self.host = host
         self.port = port
         self.transport = None
         self.datatype = datatype
-        self.share_data = share_data
+        self.share_data = {}
         self.capture_function = capture_function
         self.compress = compress
         self.decompress = decompress
@@ -31,6 +31,8 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.frame_number = 0
         self.conference_id = conference_id
         self.username = username
+        self.conference_client = conference_client
+
 
     async def start_client(self):
         loop = asyncio.get_event_loop()
@@ -63,26 +65,34 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         user_name = USER_NAME + user_info.decode()
         print(f"Received data from {addr}: {user_name}")
 
+        # 初始化用户的frame_chunks
+        if user_name not in self.frame_chunks:
+            self.frame_chunks[user_name] = {}
+
         payload_data = payload[8:]
 
-        # Add the chunk to the dictionary
-        if chunk_index not in self.frame_chunks:
-            self.frame_chunks[chunk_index] = []
+        # 添加到用户的chunk
+        if chunk_index not in self.frame_chunks[user_name]:
+            self.frame_chunks[user_name][chunk_index] = []
 
-        self.frame_chunks[chunk_index].append(payload_data)
+        self.frame_chunks[user_name][chunk_index].append(payload_data)
 
-        # If we have received all chunks for a frame, reassemble and process the frame
-        if len(self.frame_chunks) == total_chunks:
-            # Reassemble all chunks into the full payload (frame)
-            full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
-            # print(f"Reassembled full frame of size {len(full_frame)} bytes")
+        # 检查是否收到所有chunks
+        if len(self.frame_chunks[user_name]) == total_chunks:
+            try:
+                # 重组完整帧
+                full_frame = b''.join(b''.join(self.frame_chunks[user_name][i]) for i in range(1, total_chunks + 1))
 
-            if self.decompress:
-                full_frame = self.decompress(full_frame)
-            self.share_data[self.datatype] = full_frame
+                if self.decompress:
+                    full_frame = self.decompress(full_frame)
 
-            # Clear the frame chunks for the next frame
-            self.frame_chunks.clear()
+                self.share_data[self.datatype][user_name] = full_frame
+
+                self.frame_chunks[user_name].clear()
+                print(f"Processed full frame for user: {user_name}, size: {len(full_frame)} bytes")
+            except Exception as e:
+                print(f"Error processing frame for user {user_name}: {e}")
+                self.frame_chunks[user_name].clear()
 
     async def send_rtp_packet(self, payload, chunk_index, total_chunks):
         """构建并发送 RTP 数据包，支持分块传输"""
@@ -141,29 +151,35 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
     async def output_data(self):
         # 输出数据
         while True:
-            # print('Output data: ', self.share_data.keys())
-            # 显示接收到的数据
-            if 'screen' in self.share_data:
-                screen_image = self.share_data['screen']
-            else:
-                screen_image = None
-            if 'camera' in self.share_data:
-                camera_images = [self.share_data['camera']]
-            else:
-                camera_images = None
-            display_image = overlay_camera_images(screen_image, camera_images)
-            if display_image:
-                img_array = np.array(display_image)
-                cv2.imshow('Conference '+str(self.conference_id), cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
-                cv2.waitKey(1)
-            else:
-                ## todo: 显示黑框
-                pass
+            # print("output", self.conference_client.user_list)
+            for user in self.conference_client.user_list:
+                # if user not in self.share_data[self.datatype]:
+                #     self.share_data[self.datatype][user] = None
+                # print('Output data: ', self.share_data.keys())
+                # 显示接收到的数据
+                print(self.share_data)
+                if 'screen' in self.share_data:
+                    screen_image = self.share_data['screen'][user]
+                else:
+                    screen_image = None
+                if 'camera' in self.share_data:
+                    camera_images = [self.share_data['camera'][user]]
+                else:
+                    camera_images = None
+                display_image = overlay_camera_images(screen_image, camera_images)
+                if display_image:
+                    img_array = np.array(display_image)
+                    cv2.imshow('Conference '+str(self.conference_id), cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
+                    cv2.waitKey(1)
+                else:
+                    ## todo: 显示黑框
+                    pass
 
-            # 播放接收到的音频
-            if 'audio' in self.share_data:
-                audio_data = self.share_data['audio']
-                play_audio(audio_data)
+                # 播放接收到的音频
+                if 'audio' in self.share_data:
+                    audio_data = self.share_data['audio'][user]
+                    play_audio(audio_data)
+
             await asyncio.sleep(1 / self.fps)
 
 class RTCPClientProtocol(asyncio.DatagramProtocol):
@@ -367,24 +383,23 @@ class ConferenceClient:
             print(f'Start sharing {data_type} on port {port}')
             if data_type == 'screen':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id, self.username,
-                                                data_type, fps=15,
+                                                self, data_type,
+                                                fps=15,
                                                 capture_function=capture_screen,
                                                 compress=compress_image,
-                                                decompress=decompress_image,
-                                                share_data=self.share_data)
+                                                decompress=decompress_image)
             elif data_type == 'camera':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id, self.username,
-                                                data_type, fps=15,
+                                                self, data_type,
+                                                fps=15,
                                                 capture_function=capture_camera,
                                                 compress=compress_image,
-                                                decompress=decompress_image,
-                                                share_data=self.share_data)
+                                                decompress=decompress_image)
 
             elif data_type == 'audio':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id, self.username,
-                                                data_type, fps=50,
-                                                capture_function=capture_voice,
-                                                share_data=self.share_data)
+                                                self, data_type, fps=50,
+                                                capture_function=capture_voice)
             elif data_type == 'text':
                 recv_task = asyncio.create_task(self.recv_text())
                 self.tasks.append(recv_task)
@@ -484,98 +499,6 @@ class ConferenceClient:
 
             if not recognized:
                 print(f'[Warn]: Unrecognized cmd_input {cmd_input}')
-
-    # async def start(self):
-    #     # Start the GUI and the asyncio loop
-    #     await self.gui.start()
-
-    # class GUIClient:
-    #     def __init__(self, client_instance):
-    #         self.client = client_instance  # Reference to the ConferenceClient instance
-    #         self.username = client_instance.username
-    #         self.on_meeting = client_instance.on_meeting
-    #         self.conference_id = client_instance.conference_id
-    #         self.root = Tk()
-    #         self.root.title("Client GUI")
-
-    #         # Create GUI components
-    #         self.status_label = Label(self.root, text=f"Status: Free")
-    #         self.status_label.pack()
-
-    #         self.input_label = Label(self.root, text="Enter a command (enter '?' for help):")
-    #         self.input_label.pack()
-
-    #         self.input_var = StringVar()
-    #         self.input_entry = Entry(self.root, textvariable=self.input_var)
-    #         self.input_entry.pack()
-
-    #         self.send_button = Button(self.root, text="Send", command=self.handle_input)
-    #         self.send_button.pack()
-
-    #         self.output_text = Text(self.root, height=20, width=50)
-    #         self.output_text.pack()
-
-    #     def update_status(self):
-    #         status = f"OnMeeting-{self.client.conference_id}" if self.client.on_meeting else "Free"
-    #         self.status_label.config(text=f"Status: {status}")
-
-    #     def log_output(self, message):
-    #         self.output_text.insert(END, message + "\n")
-    #         self.output_text.see(END)
-
-    #     async def start(self):
-    #         self.log_output(f"Client started, your username is: {self.username}")
-    #         self.root.mainloop()
-
-    #     def handle_input(self):
-    #         cmd_input = self.input_var.get().strip().lower()
-    #         self.input_var.set("")
-            
-    #         recognized = True
-    #         fields = cmd_input.split(maxsplit=1)
-
-    #         if len(fields) == 1:
-    #             if cmd_input in ('?', '？'):
-    #                 self.log_output("Help: Available commands are create, quit, cancel, list, share, join <id>, text <message>")
-    #             elif cmd_input == 'create':
-    #                 asyncio.create_task(self.client.create_conference())
-    #             elif cmd_input == 'quit':
-    #                 asyncio.create_task(self.client.quit_conference())
-    #             elif cmd_input == 'cancel':
-    #                 asyncio.create_task(self.client.cancel_conference())
-    #             elif cmd_input == 'list':
-    #                 asyncio.create_task(self.client.list_conference())
-    #             elif cmd_input == 'share':
-    #                 asyncio.create_task(self.client.share_conference())
-    #             else:
-    #                 recognized = False
-
-    #         elif len(fields) == 2 and fields[0] != 'text':
-    #             if fields[0] == 'join':
-    #                 input_conf_id = fields[1]
-    #                 if input_conf_id.isdigit():
-    #                     asyncio.create_task(self.client.join_conference(int(input_conf_id)))
-    #                 else:
-    #                     self.log_output('[Warn]: Input conference ID must be in digital form')
-    #             else:
-    #                 recognized = False
-
-    #         elif fields[0] == 'text':
-    #             if len(fields) >= 2:
-    #                 text = ''
-    #                 for i in range(1, len(fields)):
-    #                     text += ' ' + fields[i]
-    #                 timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    #                 full_message = f'[{timestamp}] {self.username}: {text}\n'
-    #                 asyncio.create_task(self.client.send_text(full_message))
-    #             else:
-    #                 recognized = False
-    #         else:
-    #             recognized = False
-
-    #         if not recognized:
-    #             self.log_output(f'[Warn]: Unrecognized cmd_input {cmd_input}')
-
 
 if __name__ == '__main__':
     client = ConferenceClient()

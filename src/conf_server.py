@@ -29,15 +29,17 @@ class RTPServer(asyncio.DatagramProtocol):
         print(f"Received data from {addr}:{port}")
         self.client_conns[addr] = self.transport
         for client_addr, transport in self.client_conns.items():
+            print(f"Sending data to {client_addr}")
             transport.sendto(data, client_addr)
 
 class RTPScreenServer(asyncio.DatagramProtocol):
-    def __init__(self, host, port, sharing_user):
+    def __init__(self, host, port, conference_server):
         self.host = host
         self.port = port
         self.transport = None
         self.client_address = None
         self.client_conns = {}
+        self.conference_server = conference_server
 
     async def start_server(self):
         loop = asyncio.get_event_loop()
@@ -56,14 +58,21 @@ class RTPScreenServer(asyncio.DatagramProtocol):
         print(f"Received data from {addr}:{port}")
         self.client_conns[addr] = self.transport
 
+        # print(self.client_conns)
+
         header = data[:12]
         payload = data[12:]
 
-        user_info = payload[4:8]
-
-        if user_info == self.sharing_user:
-            for client_addr, transport in self.client_conns.items():
-                transport.sendto(data, client_addr)
+        user_info = payload[4:8].decode()
+        # print(user_info)
+    
+        if self.conference_server.sharing_user is not None:
+            # print(self.conference_server.sharing_user[4:])
+            
+            if user_info == self.conference_server.sharing_user[4:]:
+                for client_addr, transport in self.client_conns.items():
+                    print(f"Sending data to {client_addr}")
+                    transport.sendto(data, client_addr)
 
 class RTCPServer(asyncio.DatagramProtocol):
     def __init__(self, host, port, client_conns, user_list):
@@ -193,7 +202,7 @@ class ConferenceServer:
                 pass
             elif data_type == 'screen':
                 print(f'Starting RTP Screen server for {data_type} on port {port}')
-                data_server = RTPScreenServer(SERVER_IP, port, self.sharing_user[4:])
+                data_server = RTPScreenServer(SERVER_IP, port, self)
                 data_server_sockets[data_type] = data_server.transport
                 self.tasks.append(asyncio.create_task(data_server.start_server()))
                 print(f'RTP Screen server for {data_type} started on port {port}')
@@ -279,7 +288,7 @@ class MainServer:
         # 分配端口（简单实现，可以根据需要修改）
         conf_serve_port = MAIN_SERVER_PORT + conference_id * 10
         data_serve_ports = {
-            # 'screen': conf_serve_port + 1,
+            'screen': conf_serve_port + 1,
             # 'camera': conf_serve_port + 2,
             # 'audio': conf_serve_port + 3,
             'text': conf_serve_port + 4,

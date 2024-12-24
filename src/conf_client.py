@@ -12,6 +12,9 @@ from datetime import datetime
 from config import *
 from random import randint
 
+VIDEO_FPS = 15
+AUDIO_FPS = 50
+
 class RTPClientProtocol(asyncio.DatagramProtocol):
     def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=10, decompress=None, share_data=None):
         self.host = host
@@ -22,11 +25,12 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.capture_function = capture_function
         self.compress = compress
         self.decompress = decompress
-        self.fps = fps
+        self.fps = fps  # Frames per second of the data stream
         self.frame_chunks = {}
         self.chunk_size = 50000
         self.frame_number = 0
         self.conference_id = conference_id
+        self.enable = True
 
 
     async def start_client(self):
@@ -43,8 +47,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         # asyncio.create_task(self.output_data())
 
         self.tasks = [
-            asyncio.create_task(self.stream_data()),
-            asyncio.create_task(self.output_data())
+            asyncio.create_task(self.stream_data())
         ]
         await asyncio.gather(*self.tasks)
 
@@ -78,8 +81,9 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             # Reassemble all chunks into the full payload (frame)
             full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
             # print(f"Reassembled full frame of size {len(full_frame)} bytes")
-
-            if self.decompress:
+            if full_frame == b'EMPTY_FRAME':
+                full_frame = None
+            elif self.decompress:
                 full_frame = self.decompress(full_frame)
             self.share_data[self.datatype] = full_frame
 
@@ -117,9 +121,15 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
     async def stream_data(self):
         print(f"Start streaming {self.datatype} data")
         while True:
-            payload = self.capture_function()
-            if self.compress:
-                payload = self.compress(payload)
+            if not self.enable:
+                if self.datatype in ['screen', 'camera']:
+                    payload = b'EMPTY_FRAME'
+                else:
+                    payload = b''
+            else:
+                payload = self.capture_function()
+                if self.compress:
+                    payload = self.compress(payload)
 
             # print(len(payload))
 
@@ -136,33 +146,6 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
                 await self.send_rtp_packet(payload, 1, 1)
             await asyncio.sleep(1 / self.fps)
 
-    async def output_data(self):
-        # 输出数据
-        while True:
-            # print('Output data: ', self.share_data.keys())
-            # 显示接收到的数据
-            if 'screen' in self.share_data:
-                screen_image = self.share_data['screen']
-            else:
-                screen_image = None
-            if 'camera' in self.share_data:
-                camera_images = [self.share_data['camera']]
-            else:
-                camera_images = None
-            display_image = overlay_camera_images(screen_image, camera_images)
-            if display_image:
-                img_array = np.array(display_image)
-                cv2.imshow('Conference '+str(self.conference_id), cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
-                cv2.waitKey(1)
-            else:
-                ## todo: 显示黑框
-                pass
-
-            # 播放接收到的音频
-            if 'audio' in self.share_data:
-                audio_data = self.share_data['audio']
-                play_audio(audio_data)
-            await asyncio.sleep(1 / self.fps)
 
 class ConferenceClient:
     def __init__(self):
@@ -183,6 +166,33 @@ class ConferenceClient:
         self.username = USER_NAME+str(randint(0, 9999))
         self.text_reader = None
         self.text_writer = None
+
+    async def output_video(self):
+        # 输出数据
+        while True:
+            # print('Output data: ', self.share_data.keys())
+            # 显示接收到的数据
+            if 'screen' in self.share_data:
+                screen_image = self.share_data['screen']
+            else:
+                screen_image = None
+            if 'camera' in self.share_data and self.share_data['camera'] is not None:
+                camera_images = [self.share_data['camera']]
+            else:
+                camera_images = None
+            display_image = overlay_camera_images(screen_image, camera_images)
+            img_array = np.array(display_image)
+            cv2.imshow('Conference '+str(self.conference_id), cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
+            cv2.waitKey(1)
+            await asyncio.sleep(1 / VIDEO_FPS)
+
+    async def output_audio(self):
+        # 输出数据
+        while True:
+            if 'audio' in self.share_data:
+                audio_data = self.share_data['audio']
+                play_audio(audio_data)
+            await asyncio.sleep(1 / AUDIO_FPS)
 
     async def create_conference(self):
         reader, writer = await asyncio.open_connection(*self.server_addr)
@@ -300,12 +310,19 @@ class ConferenceClient:
         writer.close()
         await writer.wait_closed()
 
-    ## todo: implement this function
-    def share_switch(self, data_type):
+    async def share_switch(self, data_type):
         '''
         switch for sharing certain type of data (screen, camera, audio, etc.)
         '''
-        pass
+        for data_server in self.data_server:
+            if data_server.datatype == data_type:
+                data_server.enable = not data_server.enable
+                if data_server.enable:
+                    print(f'[Info] {data_type} sharing is turned on')
+                else:
+                    print(f'[Info] {data_type} sharing is turned off')
+                return
+        print(f'[Warn] No {data_type} data server found')
 
     async def start_conference(self):
         # 启动数据接收和发送任务
@@ -314,14 +331,14 @@ class ConferenceClient:
             print(f'Start sharing {data_type} on port {port}')
             if data_type == 'screen':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
-                                                data_type, fps=15,
+                                                data_type, fps=VIDEO_FPS,
                                                 capture_function=capture_screen,
                                                 compress=compress_image,
                                                 decompress=decompress_image,
                                                 share_data=self.share_data)
             elif data_type == 'camera':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
-                                                data_type, fps=15,
+                                                data_type, fps=VIDEO_FPS,
                                                 capture_function=capture_camera,
                                                 compress=compress_image,
                                                 decompress=decompress_image,
@@ -329,7 +346,7 @@ class ConferenceClient:
 
             elif data_type == 'audio':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
-                                                data_type, fps=50,
+                                                data_type, fps=AUDIO_FPS,
                                                 capture_function=capture_voice,
                                                 share_data=self.share_data)
             elif data_type == 'text':
@@ -337,7 +354,8 @@ class ConferenceClient:
                 self.tasks.append(recv_task)
             self.tasks.append(asyncio.create_task(data_server.start_client()))
             self.data_server.append(data_server)
-
+        self.tasks.append(asyncio.create_task(self.output_video()))
+        self.tasks.append(asyncio.create_task(self.output_audio()))
         await asyncio.gather(*self.tasks)
 
     async def send_text(self, text):
@@ -396,6 +414,10 @@ class ConferenceClient:
                     await self.cancel_conference()
                 elif cmd_input == 'list':
                     await self.list_conference()
+                elif cmd_input == 'camera':
+                    await self.share_switch('camera')
+                elif cmd_input == 'audio':
+                    await self.share_switch('audio')
                 else:
                     recognized = False
             elif len(fields) == 2 and fields[0] != 'text':

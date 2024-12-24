@@ -7,9 +7,13 @@ from io import BytesIO
 import pyaudio
 import cv2
 import pyautogui
+import struct
 import numpy as np
 from PIL import Image, ImageGrab, UnidentifiedImageError
 from config import *
+import subprocess
+from PIL import Image
+import ffmpeg
 
 
 # audio setting
@@ -27,7 +31,10 @@ if cap.isOpened():
 else:
     can_capture_camera = False
 
-my_screen_size = pyautogui.size()
+# my_screen_size = pyautogui.size()
+
+# 1920x1080
+my_screen_size = (1920, 1080)
 
 
 def resize_image_to_fit_screen(image, my_screen_size):
@@ -79,7 +86,7 @@ def overlay_camera_images(screen_image, camera_images):
             adjusted_camera_width = screen_width // len(camera_images)
             adjusted_camera_height = (adjusted_camera_width * camera_height) // camera_width
             camera_images = [img.resize((adjusted_camera_width, adjusted_camera_height), Image.LANCZOS) for img in
-                             camera_images]
+                                camera_images]
             camera_width, camera_height = adjusted_camera_width, adjusted_camera_height
             num_cameras_per_row = len(camera_images)
 
@@ -102,11 +109,10 @@ def overlay_camera_images(screen_image, camera_images):
 
 
 def capture_screen():
-    # capture screen with the resolution of display
-    # img = pyautogui.screenshot()
-    img = ImageGrab.grab()
-    return img
-
+    screen = ImageGrab.grab()
+    screen_image = np.array(screen)
+    screen_image = cv2.resize(screen_image, (1920, 1080), interpolation=cv2.INTER_AREA)
+    return screen_image
 
 def capture_camera():
     # capture frame of camera
@@ -123,7 +129,7 @@ def play_audio(audio_data):
     streamout.write(audio_data)
 
 
-def compress_image(image, format='JPEG', quality=85):
+def compress_image(frame, format='JPEG', quality=50):
     """
     compress image and output Bytes
 
@@ -132,14 +138,9 @@ def compress_image(image, format='JPEG', quality=85):
     :param quality: int, compress quality (0-100), 85 default
     :return: bytes, compressed image data
     """
-    buffer = BytesIO()
-    # Save the image to the buffer in the desired format and quality
-    image.save(buffer, format=format, quality=quality)
-    buffer.seek(0)  # Reset buffer position
-    compressed_image_data = buffer.getvalue()
-    buffer.close()
-    return compressed_image_data
-
+    _, encoded_frame = cv2.imencode('.jpg', np.array(frame), [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    payload = encoded_frame.tobytes()
+    return payload
 
 def decompress_image(image_bytes):
     """
@@ -152,4 +153,58 @@ def decompress_image(image_bytes):
     except UnidentifiedImageError:
         print("The image file could not be identified.")
         return None
+    return image
+
+def compress_screen(frame, quality=28):
+    """
+    Compress image using ffmpeg's h.264 encoding and output bytes.
+
+    :param frame: PIL.Image, input image
+    :param quality: int, CRF value for compression (0-51), lower means better quality
+    :return: bytes, compressed image data
+    """
+
+    # Convert PIL Image to raw bytes
+    raw_image = np.array(frame)
+    height, width, _ = raw_image.shape
+    raw_bytes = raw_image.tobytes()
+
+    # Use ffmpeg-python for h.264 encoding
+    process = (
+        ffmpeg
+        .input('pipe:0', format='rawvideo', pix_fmt='rgb24', s=f'{width}x{height}')
+        .output('pipe:1', vcodec='libx264', crf=quality, preset='veryfast', format='h264')
+        .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True)
+    )
+    out, err = process.communicate(input=raw_bytes)
+
+    if process.returncode != 0:
+        raise Exception(f'FFmpeg encoding failed: {err.decode()}')
+
+    # Add width and height to output bytes
+    header = struct.pack('II', width, height)
+    return header + out
+
+def decompress_screen(encoded_bytes):
+    """
+    Decode H.264 encoded bytes back to an image without specifying width and height.
+    """
+    # 解压前8个字节获取宽度和高度
+    width, height = struct.unpack('II', encoded_bytes[:8])
+    encoded_data = encoded_bytes[8:]
+
+    # Use ffmpeg-python to decode the video
+    process = (
+        ffmpeg
+        .input('pipe:0', format='h264')
+        .output('pipe:1', format='rawvideo', pix_fmt='rgb24', s=f'{width}x{height}')
+        .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True)
+    )
+    out, err = process.communicate(input=encoded_data)
+
+    if process.returncode != 0:
+        raise Exception(f'FFmpeg decoding failed: {err.decode()}')
+
+    raw_image = np.frombuffer(out, np.uint8).reshape((height, width, 3))
+    image = Image.fromarray(raw_image, 'RGB')
     return image

@@ -281,6 +281,9 @@ class ConferenceClient:
         while self.on_meeting:
             data = await reader.readline()
             message = data.decode().strip()
+            if message == 'CONFERENCE_CANCELED':
+                await self.quit_conference()
+                break
             if len(message) != 0:
                 print("text: "+message)
             # writer.close()

@@ -10,21 +10,96 @@ class RTPServer(asyncio.DatagramProtocol):
         self.port = port
         self.transport = None
         self.client_address = None
-    
+        self.client_conns = {}
+
     async def start_server(self):
         loop = asyncio.get_event_loop()
         self.transport, _ = await loop.create_datagram_endpoint(
             lambda: self, local_addr=(self.host, self.port)
         )
         print(f"RTP Server started at {self.host}:{self.port}")
-    
-    ## todo: write a router
+
     def datagram_received(self, data, addr):
-        forward_host = addr[0]
-        forward_port = addr[1]
-        # print(f"Received data from {addr}, forwarding to {forward_host}:{forward_port}")
-        self.transport.sendto(data, (forward_host, forward_port))
-        # print(len(data))
+        # forward_host = addr[0]
+        # forward_port = addr[1]
+        # # print(f"Received data from {addr}, forwarding to {forward_host}:{forward_port}")
+        # self.transport.sendto(data, (forward_host, forward_port))
+        # # print(len(data))
+        port = addr[1]
+        print(f"Received data from {addr}:{port}")
+        self.client_conns[addr] = self.transport
+        for client_addr, transport in self.client_conns.items():
+            transport.sendto(data, client_addr)
+
+class RTPScreenServer(asyncio.DatagramProtocol):
+    def __init__(self, host, port, sharing_user):
+        self.host = host
+        self.port = port
+        self.transport = None
+        self.client_address = None
+        self.client_conns = {}
+
+    async def start_server(self):
+        loop = asyncio.get_event_loop()
+        self.transport, _ = await loop.create_datagram_endpoint(
+            lambda: self, local_addr=(self.host, self.port)
+        )
+        print(f"RTP Server started at {self.host}:{self.port}")
+
+    def datagram_received(self, data, addr):
+        # forward_host = addr[0]
+        # forward_port = addr[1]
+        # # print(f"Received data from {addr}, forwarding to {forward_host}:{forward_port}")
+        # self.transport.sendto(data, (forward_host, forward_port))
+        # # print(len(data))
+        port = addr[1]
+        print(f"Received data from {addr}:{port}")
+        self.client_conns[addr] = self.transport
+
+        header = data[:12]
+        payload = data[12:]
+
+        user_info = payload[4:8]
+
+        if user_info == self.sharing_user:
+            for client_addr, transport in self.client_conns.items():
+                transport.sendto(data, client_addr)
+
+class RTCPServer(asyncio.DatagramProtocol):
+    def __init__(self, host, port, client_conns):
+        self.host = host
+        self.port = port
+        self.client_conns = client_conns
+        self.transport = None
+        self.client_address = []
+
+    async def start_server(self):
+        loop = asyncio.get_running_loop()
+        self.transport, _ = await loop.create_datagram_endpoint(
+            lambda: self, local_addr=(self.host, self.port)
+        )
+        print(f"RTCP Server started at {self.host}:{self.port}")
+
+        asyncio.create_task(self.send_message())
+
+    async def send_message(self):
+        while True:
+            print(self.client_conns)
+            if self.client_conns != {}:
+                client_num = len(self.client_conns['text'])
+            else:
+                client_num = 0
+            for addr in self.client_address:
+                message = f"Client_nums: {client_num}\n"
+                print(f"Sending RTCP message to {addr}: {message}")
+                self.transport.sendto(message.encode(), addr)
+            await asyncio.sleep(2)
+
+    def datagram_received(self, data, addr):
+        self.client_address.append(addr)
+
+        message = data.decode()
+        print(f"Received RTCP message from {addr}: {message}")
 
 class ConferenceServer:
     def __init__(self, conference_id, conf_serve_port, data_serve_ports):
@@ -37,7 +112,7 @@ class ConferenceServer:
         self.tasks = []
         self.running = True
         self.data = None
-        self.sharing_user = None
+        self.sharing_user = None # (addr, port)
 
     async def handle_data(self, reader, writer, data_type):
         addr = writer.get_extra_info('peername')
@@ -45,6 +120,7 @@ class ConferenceServer:
         if data_type not in self.client_conns:
             self.client_conns[data_type] = {}
         self.client_conns[data_type][addr] = writer
+        print(1)
         print(f'[Data] {data_type} connection from {addr} on port {port}')
 
         try:
@@ -107,27 +183,37 @@ class ConferenceServer:
         self.conf_server = await asyncio.start_server(self.handle_client, SERVER_IP, self.conf_serve_port)
         print(f'ConferenceServer started on port {self.conf_serve_port}')
 
+        data_server = await asyncio.start_server(
+                    lambda r, w: self.handle_data(r, w, 'text'),
+                    SERVER_IP, self.data_serve_ports['text']
+                )
+        print(f'Text Data server started on port {self.data_serve_ports['text']}')
+
         # Create UDP sockets for data servers
         data_server_sockets = {}
         # self.data_servers = []
         for data_type, port in self.data_serve_ports.items():
-
-            if data_type != 'text':
+            if data_type == 'text':
+                pass
+            elif data_type == 'screen':
+                print(f'Starting RTP Screen server for {data_type} on port {port}')
+                data_server = RTPScreenServer(SERVER_IP, port, self.sharing_user[4:])
+                data_server_sockets[data_type] = data_server.transport
+                self.tasks.append(asyncio.create_task(data_server.start_server()))
+                print(f'RTP Screen server for {data_type} started on port {port}')
+            elif data_type == 'control':
+                data_server = RTCPServer(SERVER_IP, port, self.client_conns)
+                data_server_sockets[data_type] = data_server.transport
+                self.tasks.append(asyncio.create_task(data_server.start_server()))
+                print(f'RTCP server for {data_type} started on port {port}')
+            else:
                 print(f'Starting RTP Data server for {data_type} on port {port}')
                 data_server = RTPServer(SERVER_IP, port)
                 data_server_sockets[data_type] = data_server.transport
                 self.tasks.append(asyncio.create_task(data_server.start_server()))
                 print(f'RTP Data server for {data_type} started on port {port}')
-            else:
-                data_server = await asyncio.start_server(
-                    lambda r, w: self.handle_data(r, w, data_type),
-                    SERVER_IP, port
-                )
-                # self.data_servers.append(data_server)
-                # self.tasks.append(data_server.serve_forever())
-                print(f'Text Data server started on port {port}')
         await asyncio.gather(*self.tasks)
-    
+
     async def stop(self):
         self.running = False
         # for server in self.data_servers:
@@ -139,10 +225,8 @@ class ConferenceServer:
 
     async def handle_cancel_conference(self, conference_id):
         print(f'Canceling conference {conference_id}')
-        # print(self.client_conns)
 
         if conference_id == self.conference_id:
-
             items = list(self.client_conns['text'].items())  # 创建字典项的副本
             for addr, writer in items:
                 # print("**********************")
@@ -158,7 +242,7 @@ class ConferenceServer:
             print(f'Conference {conference_id} canceled')
         else:
             print(f'Conference {conference_id} not found')
-    
+
     async def handle_share_conference(self, writer, user_name):
         if self.sharing_user is None:
             self.sharing_user = user_name
@@ -191,10 +275,11 @@ class MainServer:
         # 分配端口（简单实现，可以根据需要修改）
         conf_serve_port = MAIN_SERVER_PORT + conference_id * 10
         data_serve_ports = {
-            'screen': conf_serve_port + 1,
+            # 'screen': conf_serve_port + 1,
             # 'camera': conf_serve_port + 2,
             # 'audio': conf_serve_port + 3,
             'text': conf_serve_port + 4,
+            'control': conf_serve_port + 5
         }
 
         # 创建并启动 ConferenceServer
@@ -250,7 +335,7 @@ class MainServer:
         await writer.drain()
         writer.close()
         await writer.wait_closed()
-    
+
     async def handle_share_conference(self, _, writer, conference_id, user_name):
         if conference_id in self.conference_servers:
             conference_server = self.conference_servers[conference_id]

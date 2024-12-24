@@ -16,7 +16,7 @@ from tkinter import Tk, Label, Entry, Button, Text, StringVar, END
 from datetime import datetime
 
 class RTPClientProtocol(asyncio.DatagramProtocol):
-    def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=10, decompress=None, share_data=None):
+    def __init__(self, host, port, conference_id, username, datatype, capture_function, compress=None, fps=10, decompress=None, share_data=None):
         self.host = host
         self.port = port
         self.transport = None
@@ -30,7 +30,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.chunk_size = 50000
         self.frame_number = 0
         self.conference_id = conference_id
-
+        self.username = username
 
     async def start_client(self):
         loop = asyncio.get_event_loop()
@@ -39,11 +39,6 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         )
         local_addr = self.transport.get_extra_info('sockname')
         print(f"RTP Client started at {local_addr[0]}:{local_addr[1]}")
-
-        # asyncio.create_task(self.send_datagram())
-        # asyncio.create_task(self.stream_video())
-        # asyncio.create_task(self.stream_screen())
-        # asyncio.create_task(self.output_data())
 
         self.tasks = [
             asyncio.create_task(self.stream_data()),
@@ -64,11 +59,11 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         chunk_info = struct.unpack('!HH', payload[:4])  # First 4 bytes for chunk index and total chunks
         chunk_index, total_chunks = chunk_info
 
-        # Remove the chunk info from payload
-        payload_data = payload[4:]
+        user_info = payload[4:8]
+        user_name = USER_NAME + user_info.decode()
+        print(f"Received data from {addr}: {user_name}")
 
-        # Print RTP packet details
-        # print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
+        payload_data = payload[8:]
 
         # Add the chunk to the dictionary
         if chunk_index not in self.frame_chunks:
@@ -97,6 +92,10 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         timestamp = self.frame_number * 3000  # 时间戳示例
         ssrc = 12345  # 同步源 SSRC
 
+        # 获取本地地址
+        username = self.username
+        user_info = username[4:].encode('utf-8')
+
         # 构建 RTP 数据包头
         rtp_header = struct.pack(
             '!BBHII',
@@ -107,11 +106,11 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             ssrc  # SSRC
         )
 
-        # 添加分块信息
+        # 添加分块信息和源地址
         chunk_info = struct.pack('!HH', chunk_index, total_chunks)
 
-        # 构建数据包，将 RTP 头、分块信息和数据有效载荷拼接
-        rtp_packet = rtp_header + chunk_info + payload
+        # 构建数据包，将 RTP 头、分块信息、源地址和数据有效载荷拼接
+        rtp_packet = rtp_header + chunk_info + user_info + payload
 
         # 如果设置了客户端地址，则发送 RTP 数据包
         self.transport.sendto(rtp_packet)
@@ -167,6 +166,27 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
                 play_audio(audio_data)
             await asyncio.sleep(1 / self.fps)
 
+class RTCPClientProtocol(asyncio.DatagramProtocol):
+    def __init__(self, host, port, conference_id, username, share_data):
+        self.host = host
+        self.port = port
+        self.transport = None
+        self.share_data = share_data
+        self.conference_id = conference_id
+        self.username = username
+
+    async def start_client(self):
+        loop = asyncio.get_event_loop()
+        self.transport, _ = await loop.create_datagram_endpoint(
+            lambda: self, remote_addr=(self.host, self.port)
+        )
+        local_addr = self.transport.get_extra_info('sockname')
+
+        self.transport.sendto(f'RTCP_HELLO {self.conference_id} {self.username}'.encode())
+
+    def datagram_received(self, data, addr):
+        print(f"Received {data} from {addr}")
+
 class ConferenceClient:
     def __init__(self):
         self.is_working = True
@@ -178,12 +198,12 @@ class ConferenceClient:
         # self.recv_tasks = []
         # self.send_tasks = []
         self.tasks = []
-        self.data_server = []
+        self.data_servers = []
         # 连接服务器
         # self.loop = asyncio.get_event_loop()
         self.received_chunks = {}
         self.share_data = {}
-        self.username = USER_NAME+str(randint(0, 9999))
+        self.username = USER_NAME+str(randint(1000, 9999))
         self.text_reader = None
         self.text_writer = None
         # self.gui = self.GUIClient(self)
@@ -239,12 +259,12 @@ class ConferenceClient:
             for task in self.tasks:
                 task.cancel()
 
-            for data_server in self.data_server:
+            for data_server in self.data_servers:
                 if data_server.transport:
                     data_server.transport.close()
             cv2.destroyAllWindows()  # 关闭所有 OpenCV 窗口
             self.tasks.clear()
-            self.data_server.clear()
+            self.data_servers.clear()
             print('Quit conference')
         else:
             print('No conference to quit')
@@ -267,12 +287,12 @@ class ConferenceClient:
                 self.share_data = {}
                 for task in self.tasks:
                     task.cancel()
-                for data_server in self.data_server:
+                for data_server in self.data_servers:
                     if data_server.transport:
                         data_server.transport.close()
                 cv2.destroyAllWindows()  # 关闭所有 OpenCV 窗口
                 self.tasks.clear()
-                self.data_server.clear()
+                self.data_servers.clear()
                 print('Quit conference')
             else:
                 print('Failed to cancel conference')
@@ -337,14 +357,14 @@ class ConferenceClient:
         for data_type, port in self.data_serve_ports.items():
             print(f'Start sharing {data_type} on port {port}')
             if data_type == 'screen':
-                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
+                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id, self.username,
                                                 data_type, fps=15,
                                                 capture_function=capture_screen,
                                                 compress=compress_image,
                                                 decompress=decompress_image,
                                                 share_data=self.share_data)
             elif data_type == 'camera':
-                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
+                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id, self.username,
                                                 data_type, fps=15,
                                                 capture_function=capture_camera,
                                                 compress=compress_image,
@@ -352,15 +372,19 @@ class ConferenceClient:
                                                 share_data=self.share_data)
 
             elif data_type == 'audio':
-                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
+                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id, self.username,
                                                 data_type, fps=50,
                                                 capture_function=capture_voice,
                                                 share_data=self.share_data)
             elif data_type == 'text':
                 recv_task = asyncio.create_task(self.recv_text())
                 self.tasks.append(recv_task)
-            self.tasks.append(asyncio.create_task(data_server.start_client()))
-            self.data_server.append(data_server)
+            elif data_type == 'control':
+                data_server = RTCPClientProtocol(SERVER_IP, port, self.conference_id, self.username, self.share_data)
+
+            if data_type != 'text':
+                self.tasks.append(asyncio.create_task(data_server.start_client()))
+                self.data_servers.append(data_server)
 
         await asyncio.gather(*self.tasks)
 

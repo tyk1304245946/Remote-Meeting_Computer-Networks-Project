@@ -35,7 +35,7 @@ my_screen_size = pyautogui.size()
 def resize_image_to_fit_screen(image, my_screen_size):
     screen_width, screen_height = my_screen_size
 
-    original_width, original_height = image.size
+    original_height, original_width = image.shape[:2]
 
     aspect_ratio = original_width / original_height
 
@@ -49,15 +49,15 @@ def resize_image_to_fit_screen(image, my_screen_size):
         new_height = int(new_width / aspect_ratio)
 
     # resize the image
-    resized_image = image.resize((new_width, new_height), Image.LANCZOS)
+    resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
     return resized_image
 
 
 def overlay_camera_images(screen_image, camera_images):
     """
-    screen_image: PIL.Image
-    camera_images: list[PIL.Image]
+    screen_image: np.array
+    camera_images: list[np.array]
     """
     if screen_image is None and camera_images is None:
         print('[Warn]: cannot display when screen and camera are both None')
@@ -67,11 +67,11 @@ def overlay_camera_images(screen_image, camera_images):
 
     if camera_images is not None:
         # make sure same camera images
-        if not all(img.size == camera_images[0].size for img in camera_images):
+        if not all(img.shape == camera_images[0].shape for img in camera_images):
             raise ValueError("All camera images must have the same size")
 
-        screen_width, screen_height = my_screen_size if screen_image is None else screen_image.size
-        camera_width, camera_height = camera_images[0].size
+        screen_height, screen_width = my_screen_size if screen_image is None else screen_image.shape[:2]
+        camera_height, camera_width = camera_images[0].shape[:2]
 
         # calculate num_cameras_per_row
         num_cameras_per_row = screen_width // camera_width
@@ -80,14 +80,13 @@ def overlay_camera_images(screen_image, camera_images):
         if len(camera_images) > num_cameras_per_row:
             adjusted_camera_width = screen_width // len(camera_images)
             adjusted_camera_height = (adjusted_camera_width * camera_height) // camera_width
-            camera_images = [img.resize((adjusted_camera_width, adjusted_camera_height), Image.LANCZOS) for img in
-                                camera_images]
+            camera_images = [cv2.resize(img, (adjusted_camera_width, adjusted_camera_height), interpolation=cv2.INTER_AREA) for img in camera_images]
             camera_width, camera_height = adjusted_camera_width, adjusted_camera_height
             num_cameras_per_row = len(camera_images)
 
         # if no screen_img, create a container
         if screen_image is None:
-            display_image = Image.fromarray(np.zeros((camera_width, my_screen_size[1], 3), dtype=np.uint8))
+            display_image = np.zeros((camera_height, my_screen_size[0], 3), dtype=np.uint8)
         else:
             display_image = screen_image
         # cover screen_img using camera_images
@@ -96,7 +95,7 @@ def overlay_camera_images(screen_image, camera_images):
             col = i % num_cameras_per_row
             x = col * camera_width
             y = row * camera_height
-            display_image.paste(camera_image, (x, y))
+            display_image[y:y+camera_height, x:x+camera_width] = camera_image
 
         return display_image
     else:
@@ -104,10 +103,10 @@ def overlay_camera_images(screen_image, camera_images):
 
 
 def capture_screen():
-    # capture screen with the resolution of display
-    # img = pyautogui.screenshot()
-    img = ImageGrab.grab()
-    return img
+    screen = ImageGrab.grab()
+    screen_image = np.array(screen)
+    screen_image = cv2.resize(screen_image, (1920, 1080), interpolation=cv2.INTER_AREA)
+    return screen_image
 
 
 def capture_camera():
@@ -115,7 +114,9 @@ def capture_camera():
     ret, frame = cap.read()
     if not ret:
         raise Exception('Fail to capture frame from camera')
-    return Image.fromarray(frame)
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    camera_image = Image.fromarray(frame)
+    return camera_image
 
 
 def capture_voice():
@@ -125,7 +126,7 @@ def play_audio(audio_data):
     streamout.write(audio_data)
 
 
-def compress_image(image, format='JPEG', quality=50):
+def compress_image(frame, format='JPEG', quality=85):
     """
     compress image and output Bytes
 
@@ -134,24 +135,11 @@ def compress_image(image, format='JPEG', quality=50):
     :param quality: int, compress quality (0-100), 85 default
     :return: bytes, compressed image data
     """
-    buffer = BytesIO()
-    # Save the image to the buffer in the desired format and quality
-    image.save(buffer, format=format, quality=quality)
-    buffer.seek(0)              # Reset buffer position
-    compressed_image_data = buffer.getvalue()
-    buffer.close()
-    return compressed_image_data
+    _, encoded_frame = cv2.imencode('.jpg', np.array(frame), [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    payload = encoded_frame.tobytes()
+    return payload
 
-
-def decompress_image(image_bytes):
-    """
-    Decompress bytes to PIL.Image.
-    """
-    img_byte_arr = BytesIO(image_bytes)
-    try:
-        image = Image.open(img_byte_arr)
-        image.load()                    # Force loading the image to check if it's valid
-    except UnidentifiedImageError:
-        print("The image file could not be identified.")
-        return None
+def decompress_image(payload):
+    np_arr = np.frombuffer(payload, np.uint8)
+    image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     return image

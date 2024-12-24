@@ -1,4 +1,5 @@
 import asyncio
+import math
 import socket
 import struct
 from util import *
@@ -16,6 +17,10 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.compress = compress
         self.decompress = decompress
         self.fps = fps
+        self.frame_chunks = {}
+        self.chunk_size = 50000
+        self.frame_number = 0
+
 
     async def start_client(self):
         loop = asyncio.get_event_loop()
@@ -31,15 +36,14 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         # asyncio.create_task(self.output_data())
 
         self.tasks = [
-        #     # asyncio.create_task(self.send_datagram()),
-        #     # asyncio.create_task(self.stream_screen()),
-            asyncio.create_task(self.stream_video()),
+            asyncio.create_task(self.stream_data()),
             asyncio.create_task(self.output_data())
         ]
         await asyncio.gather(*self.tasks)
 
     def connection_made(self, transport):
         self.transport = transport
+    
 
     def datagram_received(self, data, addr):
         print(f"Received data from {addr}")
@@ -47,126 +51,89 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         header = data[:12]
         payload = data[12:]
 
-        # 解析RTP头
-        rtp_header = struct.unpack('!BBHII', header)
-        version = (rtp_header[0] >> 6) & 0x03
-        pt = rtp_header[1] & 0x7F
-        seq = rtp_header[2]
-        timestamp = rtp_header[3]
+        # Extract chunk information from the header (after RTP header)
+        chunk_info = struct.unpack('!HH', payload[:4])  # First 4 bytes for chunk index and total chunks
+        chunk_index, total_chunks = chunk_info
 
-        print(f"Recv RTP Packet: version={version}, payload_type={pt}, seq={seq}, timestamp={timestamp}, payload_size={len(payload)}")
+        # Remove the chunk info from payload
+        payload_data = payload[4:]
 
-        if self.decompress:
-            payload = self.decompress(payload)
-        # print(self.datatype)
-        self.share_data[self.datatype] = payload
+        # Print RTP packet details
+        print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
 
-    async def stream_video(self):
-        # cap = cv2.VideoCapture(0)
-        frame_number = 0
+        # Add the chunk to the dictionary
+        if chunk_index not in self.frame_chunks:
+            self.frame_chunks[chunk_index] = []
 
+        self.frame_chunks[chunk_index].append(payload_data)
+
+        # If we have received all chunks for a frame, reassemble and process the frame
+        if len(self.frame_chunks) == total_chunks:
+            # Reassemble all chunks into the full payload (frame)
+            full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
+            print(f"Reassembled full frame of size {len(full_frame)} bytes")
+
+            if self.decompress:
+                full_frame = self.decompress(full_frame)
+            self.share_data[self.datatype] = full_frame
+
+            # Clear the frame chunks for the next frame
+            self.frame_chunks.clear()
+
+    async def send_rtp_packet(self, payload, chunk_index, total_chunks):
+        """构建并发送 RTP 数据包，支持分块传输"""
+        version = 2
+        payload_type = 26  # JPEG
+        sequence_number = self.frame_number
+        timestamp = self.frame_number * 3000  # 时间戳示例
+        ssrc = 12345  # 同步源 SSRC
+
+        # 构建 RTP 数据包头
+        rtp_header = struct.pack(
+            '!BBHII',
+            (version << 6) | payload_type,  # RTP 版本和有效负载类型
+            0,  # 填充和扩展标志（此处为 0）
+            sequence_number,  # 序列号
+            timestamp,  # 时间戳
+            ssrc  # SSRC
+        )
+
+        # 添加分块信息
+        chunk_info = struct.pack('!HH', chunk_index, total_chunks)
+
+        # 构建数据包，将 RTP 头、分块信息和数据有效载荷拼接
+        rtp_packet = rtp_header + chunk_info + payload
+
+        # 如果设置了客户端地址，则发送 RTP 数据包
+        self.transport.sendto(rtp_packet)
+        self.frame_number += 1
+
+    async def stream_data(self):
         while True:
-            # ret, frame = cap.read()
-            # if not ret:
-            #     break
-
-            # frame = capture_camera()
-            frame = capture_screen()
-            
-            payload = compress_image(frame)
-
-            print(len(payload))
-            version = 2
-            payload_type = 26  # JPEG
-            sequence_number = frame_number
-            timestamp = frame_number * 3000
-            ssrc = 12345
-
-            rtp_header = struct.pack('!BBHII',
-                                        (version << 6) | payload_type,
-                                        0,
-                                        sequence_number,
-                                        timestamp,
-                                        ssrc)
-
-            rtp_packet = rtp_header + payload
-
-            self.transport.sendto(rtp_packet)
-            frame_number += 1
-            await asyncio.sleep(1 / 1)  # 30 FPS
-
-        cap.release()
-        cv2.destroyAllWindows()
-        self.transport.close()
-
-    async def stream_screen(self):
-        frame_number = 0
-
-        while True:
-            screen = capture_screen()
-
-            _, encoded_frame = cv2.imencode('.jpg', screen)
-            payload = encoded_frame.tobytes()
-
-            version = 2
-            payload_type = 26  # JPEG
-            sequence_number = frame_number
-            timestamp = frame_number * 3000
-            ssrc = 12345
-
-            rtp_header = struct.pack('!BBHII',
-                                        (version << 6) | payload_type,
-                                        0,
-                                        sequence_number,
-                                        timestamp,
-                                        ssrc)
-
-            rtp_packet = rtp_header + payload
-
-            self.transport.sendto(rtp_packet)
-            frame_number += 1
-            await asyncio.sleep(1 / self.fps)  # 30 FPS
-
-        cap.release()
-        cv2.destroyAllWindows()
-        self.transport.close()
-
-    async def send_datagram(self):
-        frame_number = 0
-        while True:
-            # print(1)
             payload = self.capture_function()
-            # print(len(payload))
             if self.compress:
                 payload = self.compress(payload)
 
             print(len(payload))
 
-            # Build RTP packet header
-            version = 2
-            payload_type = 26  # JPEG
-            sequence_number = frame_number
-            timestamp = frame_number * 3000  # Example timestamp increment
-            ssrc = 12345
-
-            rtp_header = struct.pack('!BBHII',
-                                        (version << 6) | payload_type,
-                                        0,
-                                        sequence_number,
-                                        timestamp,
-                                        ssrc)
-            rtp_packet = rtp_header + payload
-
-            # Send RTP packet
-            self.transport.sendto(rtp_packet)
-            frame_number += 1
-            await asyncio.sleep(1 / 30)  # Simulate 30 FPS
+            # 如果 payload 超过了最大大小，进行分块传输
+            if len(payload) > self.chunk_size:
+                total_chunks = math.ceil(len(payload) / self.chunk_size)  # 计算总块数
+                for i in range(total_chunks):
+                    start = i * self.chunk_size
+                    end = min(start + self.chunk_size, len(payload))
+                    chunk = payload[start:end]
+                    await self.send_rtp_packet(chunk,i + 1, total_chunks)
+            else:
+                # 如果有效负载较小，直接发送
+                await self.send_rtp_packet(payload, 1, 1)
+            await asyncio.sleep(1 / self.fps)
 
     async def output_data(self):
         while True:
             print('Output data: ', self.share_data.keys())
             # 显示接收到的数据
-            print(self.share_data)
+            # print(self.share_data)
             if 'screen' in self.share_data:
                 screen_image = self.share_data['screen']
             else:
@@ -180,6 +147,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             display_image = overlay_camera_images(screen_image, camera_images)
             # display_image = screen_image
             if display_image is not None:
+                # print(123, len(display_image))
                 img_array = np.array(display_image)
                 cv2.imshow('Conference', cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
                 cv2.waitKey(1)
@@ -192,7 +160,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
                 audio_data = self.share_data['audio']
                 play_audio(audio_data)
 
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
 
 class ConferenceClient:
     def __init__(self):

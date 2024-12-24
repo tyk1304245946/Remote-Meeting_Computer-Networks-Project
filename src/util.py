@@ -65,8 +65,8 @@ def overlay_camera_images(screen_image, camera_images):
     camera_images: list[PIL.Image]
     """
     if screen_image is None and camera_images is None:
-        print('[Warn]: cannot display when screen and camera are both None')
-        return None
+        black_background = Image.fromarray(np.zeros((my_screen_size[1], my_screen_size[0], 3), dtype=np.uint8), 'RGB')
+        return black_background
     if screen_image is not None:
         screen_image = resize_image_to_fit_screen(screen_image, my_screen_size)
 

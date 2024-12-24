@@ -37,6 +37,7 @@ class ConferenceServer:
         self.tasks = []
         self.running = True
         self.data = None
+        self.sharing_user = None
 
     async def handle_data(self, reader, writer, data_type):
         addr = writer.get_extra_info('peername')
@@ -160,6 +161,24 @@ class ConferenceServer:
             print(f'Conference {conference_id} canceled')
         else:
             print(f'Conference {conference_id} not found')
+    
+    async def handle_share_conference(self, writer, user_name):
+        if self.sharing_user is None:
+            self.sharing_user = user_name
+            print(f'Sharing user: {user_name}')
+            writer.write('SHARE_OK\n'.encode())
+            await writer.drain()
+        elif self.sharing_user == user_name:
+            self.sharing_user = None
+            print(f'Sharing user: {self.sharing_user}')
+            writer.write('SHARE_STOP\n'.encode())
+            await writer.drain()
+        else:
+            print(f'Sharing user: {self.sharing_user}')
+            writer.write('SHARE_BUSY\n'.encode())
+            await writer.drain()
+        writer.close()
+        await writer.wait_closed()
 
 
 class MainServer:
@@ -235,6 +254,16 @@ class MainServer:
         await writer.drain()
         writer.close()
         await writer.wait_closed()
+    
+    async def handle_share_conference(self, _, writer, conference_id, user_name):
+        if conference_id in self.conference_servers:
+            conference_server = self.conference_servers[conference_id]
+            await conference_server.handle_share_conference(writer, user_name)
+        else:
+            writer.write('ERROR Conference not found\n'.encode())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
 
     async def request_handler(self, reader, writer):
         data = await reader.readline()
@@ -255,6 +284,9 @@ class MainServer:
             await self.handle_cancel_conference(reader, writer, int(conf_id))
         elif message == 'LIST_CONFERENCE':
             await self.handle_get_conference_list(reader, writer)
+        elif message.startswith('SHARE_CONFERENCE'):
+            _, conf_id, user_name = message.split()
+            await self.handle_share_conference(reader, writer, int(conf_id), user_name)
         else:
             writer.write('ERROR Invalid command\n'.encode())
             await writer.drain()

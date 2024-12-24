@@ -37,38 +37,6 @@ class ConferenceServer:
         self.tasks = []
         self.running = True
 
-    # async def handle_data(self, data_type, server_socket):
-    #     data, addr1 = server_socket.recvfrom(65536)
-    #     port = addr1[1]
-    #     if data_type not in self.client_conns:
-    #         self.client_conns[data_type] = {}
-    #     self.client_conns[data_type][addr1] = server_socket
-    #     print(len(data))
-    #     print(f'[Data] {data_type} connection from {addr1} on port {port}')
-
-    #     try:
-    #         while self.running:
-    #             data, addr = server_socket.recvfrom(65536)
-    #             if addr != addr1:
-    #                 del self.client_conns[data_type][addr1]
-    #                 addr1 = addr
-    #                 self.client_conns[data_type][addr1] = server_socket
-    #             print(len(data))
-    #             print(f"Received {data_type} from {addr}")
-    #             print(self.client_conns)
-    #             if data:
-    #                 # Forward data to other clients
-    #                 for client_addr in self.client_conns[data_type]:
-    #                     # if client_addr != addr:
-    #                     server_socket.sendto(data, client_addr)
-    #     except ConnectionResetError:
-    #         pass
-    #     finally:
-    #         print(f'[Data] {data_type} connection closed: {addr}')
-    #         del self.client_conns[data_type][addr]
-    #         server_socket.close()
-    #         await server_socket.wait_closed()
-
     async def handle_client(self, reader, writer):
         addr = writer.get_extra_info('peername')
         self.clients_info[addr] = writer
@@ -101,23 +69,10 @@ class ConferenceServer:
         data_server_sockets = {}
         for data_type, port in self.data_serve_ports.items():
             data_server = RTPServer(SERVER_IP, port)
-            await data_server.start_server()
             data_server_sockets[data_type] = data_server.transport
             self.tasks.append(asyncio.create_task(data_server.start_server()))
             print(f'RTP Data server for {data_type} started on port {port}')
         await asyncio.gather(*self.tasks)
-
-        # Start conference server and data servers handling in parallel
-        # tasks = [
-        #     asyncio.create_task(self.handle_client(conf_server_socket))
-        # ]
-        # tasks = []
-        # for data_type, server_socket in data_server_sockets.items():
-        #     tasks.append(asyncio.create_task(self.handle_data(data_type, server_socket)))
-
-        # # Wait for the servers to stop
-        # await asyncio.gather(*tasks)
-
 
 class MainServer:
     def __init__(self, server_ip, main_port):

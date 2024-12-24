@@ -207,6 +207,4 @@ def decompress_screen(encoded_bytes):
 
     raw_image = np.frombuffer(out, np.uint8).reshape((height, width, 3))
     image = Image.fromarray(raw_image, 'RGB')
-
-    image.save('test.jpg')
     return image

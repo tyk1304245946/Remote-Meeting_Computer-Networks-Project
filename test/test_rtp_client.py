@@ -16,22 +16,45 @@ async def rtp_client(host='127.0.0.1', port=5005):
     sock.sendto(b'hello', (host, port))
     print(f"RTP client listening on {host}:{port}")
 
+    # Dictionary to store chunks for each frame
+    frame_chunks = {}
+
     while True:
+        # Receive RTP packet (max 65535 bytes)
         packet, _ = sock.recvfrom(65535)
-        # RTP头12字节
+
+        # Extract the RTP header (first 12 bytes)
         header = packet[:12]
         payload = packet[12:]
 
-        # 解析RTP头
-        rtp_header = struct.unpack('!BBHII', header)
-        version = (rtp_header[0] >> 6) & 0x03
-        pt = rtp_header[1] & 0x7F
-        seq = rtp_header[2]
-        timestamp = rtp_header[3]
+        # Extract chunk information from the header (after RTP header)
+        chunk_info = struct.unpack('!HH', payload[:4])  # First 4 bytes for chunk index and total chunks
+        chunk_index, total_chunks = chunk_info
 
-        print(f"Recv RTP Packet: version={version}, payload_type={pt}, seq={seq}, timestamp={timestamp}, payload_size={len(payload)}")
+        # Remove the chunk info from payload
+        payload_data = payload[4:]
 
-        show_frame(payload)
+        # Print RTP packet details
+        print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
+
+        # Add the chunk to the dictionary
+        if chunk_index not in frame_chunks:
+            frame_chunks[chunk_index] = []
+
+        frame_chunks[chunk_index].append(payload_data)
+
+        # If we have received all chunks for a frame, reassemble and process the frame
+        if len(frame_chunks) == total_chunks:
+            # Reassemble all chunks into the full payload (frame)
+            full_frame = b''.join(b''.join(frame_chunks[i]) for i in range(1, total_chunks + 1))
+            print(f"Reassembled full frame of size {len(full_frame)} bytes")
+
+            # Display the frame (or process it further)
+            show_frame(full_frame)
+
+            # Clear the frame chunks for the next frame
+            frame_chunks.clear()
+
 
 async def main():
     client_task = asyncio.create_task(rtp_client())

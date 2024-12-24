@@ -18,3 +18,5 @@ RATE = 44100  # Sampling rate for audio capture
 USER_NAME = 'user'
 
 camera_width, camera_height = 480, 480  # resolution for camera capture
+
+

@@ -13,7 +13,6 @@ from config import *
 
 
 # audio setting
-## todo: 检测是否有可用的麦克风
 FORMAT = pyaudio.paInt16
 audio = pyaudio.PyAudio()
 streamin = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
@@ -80,7 +79,7 @@ def overlay_camera_images(screen_image, camera_images):
             adjusted_camera_width = screen_width // len(camera_images)
             adjusted_camera_height = (adjusted_camera_width * camera_height) // camera_width
             camera_images = [img.resize((adjusted_camera_width, adjusted_camera_height), Image.LANCZOS) for img in
-                             camera_images]
+                                camera_images]
             camera_width, camera_height = adjusted_camera_width, adjusted_camera_height
             num_cameras_per_row = len(camera_images)
 
@@ -103,11 +102,10 @@ def overlay_camera_images(screen_image, camera_images):
 
 
 def capture_screen():
-    # capture screen with the resolution of display
-    # img = pyautogui.screenshot()
-    img = ImageGrab.grab()
-    return img
-
+    screen = ImageGrab.grab()
+    screen_image = np.array(screen)
+    screen_image = cv2.resize(screen_image, (1920, 1080), interpolation=cv2.INTER_AREA)
+    return screen_image
 
 def capture_camera():
     # capture frame of camera
@@ -124,7 +122,7 @@ def play_audio(audio_data):
     streamout.write(audio_data)
 
 
-def compress_image(image, format='JPEG', quality=85):
+def compress_image(frame, format='JPEG', quality=50):
     """
     compress image and output Bytes
 
@@ -133,14 +131,9 @@ def compress_image(image, format='JPEG', quality=85):
     :param quality: int, compress quality (0-100), 85 default
     :return: bytes, compressed image data
     """
-    buffer = BytesIO()
-    # Save the image to the buffer in the desired format and quality
-    image.save(buffer, format=format, quality=quality)
-    buffer.seek(0)  # Reset buffer position
-    compressed_image_data = buffer.getvalue()
-    buffer.close()
-    return compressed_image_data
-
+    _, encoded_frame = cv2.imencode('.jpg', np.array(frame), [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    payload = encoded_frame.tobytes()
+    return payload
 
 def decompress_image(image_bytes):
     """

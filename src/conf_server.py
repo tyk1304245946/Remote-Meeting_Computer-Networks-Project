@@ -1,9 +1,30 @@
 import asyncio
+import struct
 from config import *
-from util import decompress_image, overlay_camera_images, play_audio
-import cv2
-import numpy as np
-from datetime import datetime
+import asyncio
+import socket
+
+class RTPServer(asyncio.DatagramProtocol):
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.transport = None
+        self.client_address = None
+    
+    async def start_server(self):
+        loop = asyncio.get_event_loop()
+        self.transport, _ = await loop.create_datagram_endpoint(
+            lambda: self, local_addr=(self.host, self.port)
+        )
+        print(f"RTP Server started at {self.host}:{self.port}")
+    
+    ## todo: write a router
+    def datagram_received(self, data, addr):
+        forward_host = addr[0]
+        forward_port = addr[1]
+        print(f"Received data from {addr}, forwarding to {forward_host}:{forward_port}")
+        self.transport.sendto(data, (forward_host, forward_port))
+        print(len(data))
 
 class ConferenceServer:
     def __init__(self, conference_id, conf_serve_port, data_serve_ports):
@@ -13,79 +34,40 @@ class ConferenceServer:
         self.data_types = list(data_serve_ports.keys())
         self.clients_info = {}  # {client_addr: writer}
         self.client_conns = {}  # {data_type: {client_addr: writer}}
+        self.tasks = []
         self.running = True
-        self.data = None
 
-    async def handle_data(self, reader, writer, data_type):
-        addr = writer.get_extra_info('peername')
-        port = writer.get_extra_info('sockname')[1]
-        if data_type not in self.client_conns:
-            self.client_conns[data_type] = {}
-        self.client_conns[data_type][addr] = writer
-        print(f'[Data] {data_type} connection from {addr} on port {port}')
+    # async def handle_data(self, data_type, server_socket):
+    #     data, addr1 = server_socket.recvfrom(65536)
+    #     port = addr1[1]
+    #     if data_type not in self.client_conns:
+    #         self.client_conns[data_type] = {}
+    #     self.client_conns[data_type][addr1] = server_socket
+    #     print(len(data))
+    #     print(f'[Data] {data_type} connection from {addr1} on port {port}')
 
-        try:
-            while self.running:
-                data = bytearray()
-                while True:
-                    chunk = await reader.read(1024*1024)
-                    # print(f'Received {len(chunk)} bytes')
-
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-                    if len(chunk)<131072:
-                        break
-                self.data = data
-                # print("len: ", len(data))
-
-
-                if not data:
-                    break
-                # 转发数据给其他客户端
-                for client_addr, client_writer in self.client_conns[data_type].items():
-                    if client_addr != addr:
-                        client_writer.write(data)
-                        await client_writer.drain()
-                        # print(f'Sending {len(data)} bytes to {client_addr}')
-
-        except ConnectionResetError:
-            pass
-        finally:
-            print(f'[Data] {data_type} connection closed from {addr}')
-            del self.client_conns[data_type][addr]
-            writer.close()
-            await writer.wait_closed()
-
-    async def handle_text(self, reader, writer, data_type):
-        addr = writer.get_extra_info('peername')
-        port = writer.get_extra_info('sockname')[1]
-        if data_type not in self.client_conns:
-            self.client_conns[data_type] = {}
-        self.client_conns[data_type][addr] = writer
-        print(f'[Data] {data_type} connection from {addr} on port {port}')
-
-        try:
-            while self.running:
-                data = await reader.readline()
-                if not data:
-                    break
-                message = data.decode().strip()
-                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                full_message = f'[{timestamp}] {addr}: {message}'
-
-                for client_addr, client_writer in self.client_conns[data_type].items():
-                    if client_addr != addr:
-                        client_writer.write(f'{full_message}\n'.encode())
-                        await client_writer.drain()
-                        print(f'Sending {len(data)} bytes to {client_addr}')
-        except ConnectionResetError:
-            pass
-        finally:
-            print(f'[Text] Client disconnected: {addr}')
-            del self.client_conns[data_type][addr]
-            writer.close()
-            await writer.wait_closed()
+    #     try:
+    #         while self.running:
+    #             data, addr = server_socket.recvfrom(65536)
+    #             if addr != addr1:
+    #                 del self.client_conns[data_type][addr1]
+    #                 addr1 = addr
+    #                 self.client_conns[data_type][addr1] = server_socket
+    #             print(len(data))
+    #             print(f"Received {data_type} from {addr}")
+    #             print(self.client_conns)
+    #             if data:
+    #                 # Forward data to other clients
+    #                 for client_addr in self.client_conns[data_type]:
+    #                     # if client_addr != addr:
+    #                     server_socket.sendto(data, client_addr)
+    #     except ConnectionResetError:
+    #         pass
+    #     finally:
+    #         print(f'[Data] {data_type} connection closed: {addr}')
+    #         del self.client_conns[data_type][addr]
+    #         server_socket.close()
+    #         await server_socket.wait_closed()
 
     async def handle_client(self, reader, writer):
         addr = writer.get_extra_info('peername')
@@ -115,49 +97,26 @@ class ConferenceServer:
         self.conf_server = await asyncio.start_server(self.handle_client, SERVER_IP, self.conf_serve_port)
         print(f'ConferenceServer started on port {self.conf_serve_port}')
 
-        # 启动数据服务器
-        self.data_servers = []
+        # Create UDP sockets for data servers
+        data_server_sockets = {}
         for data_type, port in self.data_serve_ports.items():
-            server = await asyncio.start_server(
-                lambda r, w, dt=data_type: self.handle_data(r, w, dt), SERVER_IP, port)
-            self.data_servers.append(server)
-            print(f'Data server for {data_type} started on port {port}')
+            data_server = RTPServer(SERVER_IP, port)
+            await data_server.start_server()
+            data_server_sockets[data_type] = data_server.transport
+            self.tasks.append(asyncio.create_task(data_server.start_server()))
+            print(f'RTP Data server for {data_type} started on port {port}')
+        await asyncio.gather(*self.tasks)
 
+        # Start conference server and data servers handling in parallel
+        # tasks = [
+        #     asyncio.create_task(self.handle_client(conf_server_socket))
+        # ]
+        # tasks = []
+        # for data_type, server_socket in data_server_sockets.items():
+        #     tasks.append(asyncio.create_task(self.handle_data(data_type, server_socket)))
 
-
-        await self.conf_server.serve_forever()
-
-    async def stop(self):
-        self.running = False
-        self.conf_server.close()
-        await self.conf_server.wait_closed()
-        for server in self.data_servers:
-            server.close()
-            await server.wait_closed()
-        print('ConferenceServer stopped')
-
-    async def handle_cancel_conference(self, conference_id):
-        print(f'Canceling conference {conference_id}')
-        # print(self.client_conns)
-
-        if conference_id == self.conference_id:
-            for data_type in self.client_conns:
- 
-                items = list(self.client_conns[data_type].items())  # 创建字典项的副本
-                for addr, writer in items:
-                    # print("**********************")
-                    # print(addr)
-                    # print(writer)
-                    writer.write('CONFERENCE_CANCELED\n'.encode())
-                    await writer.drain()
-                    writer.close()
-                    await writer.wait_closed()
-            self.client_conns.clear()
-            self.clients_info.clear()
-            self.running = False
-            print(f'Conference {conference_id} canceled')
-        else:
-            print(f'Conference {conference_id} not found')
+        # # Wait for the servers to stop
+        # await asyncio.gather(*tasks)
 
 
 class MainServer:
@@ -175,9 +134,8 @@ class MainServer:
         conf_serve_port = MAIN_SERVER_PORT + conference_id * 10
         data_serve_ports = {
             'screen': conf_serve_port + 1,
-            # 'camera': conf_serve_port + 2,
-            # 'audio': conf_serve_port + 3,
-            # 'text': conf_serve_port + 4,
+            'camera': conf_serve_port + 2,
+            'audio': conf_serve_port + 3,
         }
 
         # 创建并启动 ConferenceServer
@@ -204,36 +162,6 @@ class MainServer:
         writer.close()
         await writer.wait_closed()
 
-    async def handle_cancel_conference(self, _, writer, conference_id):
-        writer.write('CANCEL_OK\n'.encode())
-        await writer.drain()
-        if conference_id in self.conference_servers:
-            conference_server = self.conference_servers[conference_id]
-            self.conference_servers[conference_id] = None
-            await conference_server.handle_cancel_conference(conference_id)
-            response = 'CANCEL_OK\n'
-            writer.write(response.encode())
-            await writer.drain()
-        else:
-            response = 'ERROR Conference not found\n'
-            writer.write(response.encode())
-            await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-
-    # get conference list
-    async def handle_get_conference_list(self, _, writer):
-        response = 'CONFERENCE_LIST'
-        print(self.conference_servers)
-        for conference_id, conference_server in self.conference_servers.items():
-            if conference_server is not None:
-                response += f' {conference_id}'
-        response += '\n'
-        writer.write(response.encode())
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-
     async def request_handler(self, reader, writer):
         data = await reader.readline()
         message = data.decode().strip()
@@ -243,15 +171,6 @@ class MainServer:
         elif message.startswith('JOIN_CONFERENCE'):
             _, conf_id = message.split()
             await self.handle_join_conference(reader, writer, int(conf_id))
-        # elif message == 'QUIT':
-        #     await self.stop_all_conferences()
-        #     writer.close()
-        #     await writer.wait_closed()
-        elif message.startswith('CANCEL_CONFERENCE'):
-            _, conf_id = message.split()
-            await self.handle_cancel_conference(reader, writer, int(conf_id))
-        elif message == 'LIST_CONFERENCE':
-            await self.handle_get_conference_list(reader, writer)
         else:
             writer.write('ERROR Invalid command\n'.encode())
             await writer.drain()

@@ -1,178 +1,138 @@
 import asyncio
+import math
+import socket
+import struct
 from util import *
 from config import *
 
 
-class ConferenceClient:
-    def __init__(self):
-        # 初始化客户端
-        self.is_working = True
-        self.server_addr = (SERVER_IP, MAIN_SERVER_PORT)
-        self.on_meeting = False
-        self.conference_id = None
-        self.conf_serve_port = None
-        self.data_serve_ports = {}
-        self.share_data = {}
-        self.recv_tasks = []
-        self.send_tasks = []
-        # 连接服务器
-        self.loop = asyncio.get_event_loop()
+class RTPClientProtocol(asyncio.DatagramProtocol):
+    def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=30, decompress=None, share_data=None):
+        self.host = host
+        self.port = port
+        self.transport = None
+        self.datatype = datatype
+        self.share_data = share_data
+        self.capture_function = capture_function
+        self.compress = compress
+        self.decompress = decompress
+        self.fps = fps
+        self.frame_chunks = {}
+        self.chunk_size = 50000
+        self.frame_number = 0
+        self.conference_id = conference_id
 
 
-    async def create_conference(self):
-        # 创建会议
-        reader, writer = await asyncio.open_connection(*self.server_addr)
+    async def start_client(self):
+        loop = asyncio.get_event_loop()
+        self.transport, _ = await loop.create_datagram_endpoint(
+            lambda: self, remote_addr=(self.host, self.port)
+        )
+        local_addr = self.transport.get_extra_info('sockname')
+        print(f"RTP Client started at {local_addr[0]}:{local_addr[1]}")
 
-        writer.write('CREATE_CONFERENCE\n'.encode())
-        await writer.drain()
-        data = await reader.readline()
-        message = data.decode().strip()
-        if message.startswith('CREATE_OK'):
-            _, conf_id, conf_port, data_ports = message.split(' ', 3)
-            self.conference_id = int(conf_id)
-            self.conf_serve_port = int(conf_port)
-            self.data_serve_ports = eval(data_ports)
-            self.on_meeting = True
-            print(f'Conference {self.conference_id} created')
-            # await self.start_conference()
-            # self.start_conference()
-            asyncio.create_task(self.start_conference())
+        # asyncio.create_task(self.send_datagram())
+        # asyncio.create_task(self.stream_video())
+        # asyncio.create_task(self.stream_screen())
+        # asyncio.create_task(self.output_data())
 
-        else:
-            print('Failed to create conference')
-        #####################################
-        writer.close()
-        await writer.wait_closed()
+        self.tasks = [
+            asyncio.create_task(self.stream_data()),
+            asyncio.create_task(self.output_data())
+        ]
+        await asyncio.gather(*self.tasks)
 
-    async def join_conference(self, conference_id):
-        # 加入会议
-        reader, writer = await asyncio.open_connection(*self.server_addr)
-       
-        writer.write(f'JOIN_CONFERENCE {conference_id}\n'.encode())
-        await writer.drain()
-        data = await reader.readline()
-        message = data.decode().strip()
-        if message.startswith('JOIN_OK'):
-            _, conf_id, conf_port, data_ports = message.split(' ', 3)
-            self.conference_id = int(conf_id)
-            self.conf_serve_port = int(conf_port)
-            self.data_serve_ports = eval(data_ports)
-            self.on_meeting = True
-            print(f'Joined conference {self.conference_id}')
-            # await self.start_conference()
-            asyncio.create_task(self.start_conference())
-        else:
-            print('Failed to join conference')
-        writer.close()
-        await writer.wait_closed()
+    def connection_made(self, transport):
+        self.transport = transport
 
-    async def quit_conference(self):
-        # 退出会议
-        self.on_meeting = False
-        for task in self.recv_tasks + self.send_tasks:
-            task.cancel()
-        cv2.destroyAllWindows()  # 关闭所有 OpenCV 窗口
-        self.recv_tasks.clear()
-        self.send_tasks.clear()
-        print('Quit conference')
+    def datagram_received(self, data, addr):
+        # print(f"Received data from {addr}")
+        # RTP头12字节
+        header = data[:12]
+        payload = data[12:]
 
-    async def cancel_conference(self):
-        # 取消会议
-        if self.on_meeting:
-            reader, writer = await asyncio.open_connection(*self.server_addr)
-            writer.write(f'CANCEL_CONFERENCE {self.conference_id}\n'.encode())
-            await writer.drain()
-            # print('Waiting for response')###todo: 可能阻塞
-            data = await reader.readline()
-            message = data.decode().strip()
-            print('Message: ', message)
-            if message == 'CANCEL_OK':
-                self.on_meeting = False
-                for task in self.recv_tasks + self.send_tasks:
-                    task.cancel()
-                cv2.destroyAllWindows()  # 关闭所有 OpenCV 窗口
-                self.recv_tasks.clear()
-                self.send_tasks.clear()
-                print('Conference canceled')
+        # Extract chunk information from the header (after RTP header)
+        chunk_info = struct.unpack('!HH', payload[:4])  # First 4 bytes for chunk index and total chunks
+        chunk_index, total_chunks = chunk_info
+
+        # Remove the chunk info from payload
+        payload_data = payload[4:]
+
+        # Print RTP packet details
+        print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
+
+        # Add the chunk to the dictionary
+        if chunk_index not in self.frame_chunks:
+            self.frame_chunks[chunk_index] = []
+
+        self.frame_chunks[chunk_index].append(payload_data)
+
+        # If we have received all chunks for a frame, reassemble and process the frame
+        if len(self.frame_chunks) == total_chunks:
+            # Reassemble all chunks into the full payload (frame)
+            full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
+            print(f"Reassembled full frame of size {len(full_frame)} bytes")
+
+            if self.decompress:
+                full_frame = self.decompress(full_frame)
+            self.share_data[self.datatype] = full_frame
+
+            # Clear the frame chunks for the next frame
+            self.frame_chunks.clear()
+
+    async def send_rtp_packet(self, payload, chunk_index, total_chunks):
+        """构建并发送 RTP 数据包，支持分块传输"""
+        version = 2
+        payload_type = 10 if self.datatype == 'audio' else 26
+        sequence_number = self.frame_number
+        timestamp = self.frame_number * 3000  # 时间戳示例
+        ssrc = 12345  # 同步源 SSRC
+
+        # 构建 RTP 数据包头
+        rtp_header = struct.pack(
+            '!BBHII',
+            (version << 6) | payload_type,  # RTP 版本和有效负载类型
+            0,  # 填充和扩展标志（此处为 0）
+            sequence_number,  # 序列号
+            timestamp,  # 时间戳
+            ssrc  # SSRC
+        )
+
+        # 添加分块信息
+        chunk_info = struct.pack('!HH', chunk_index, total_chunks)
+
+        # 构建数据包，将 RTP 头、分块信息和数据有效载荷拼接
+        rtp_packet = rtp_header + chunk_info + payload
+
+        # 如果设置了客户端地址，则发送 RTP 数据包
+        self.transport.sendto(rtp_packet)
+        self.frame_number += 1
+
+    async def stream_data(self):
+        print(f"Start streaming {self.datatype} data")
+        while True:
+            payload = self.capture_function()
+            if self.compress:
+                payload = self.compress(payload)
+
+            print(len(payload))
+
+            # 如果 payload 超过了最大大小，进行分块传输
+            if len(payload) > self.chunk_size:
+                total_chunks = math.ceil(len(payload) / self.chunk_size)  # 计算总块数
+                for i in range(total_chunks):
+                    start = i * self.chunk_size
+                    end = min(start + self.chunk_size, len(payload))
+                    chunk = payload[start:end]
+                    await self.send_rtp_packet(chunk,i + 1, total_chunks)
             else:
-                print('Failed to cancel conference')
-            writer.close()
-            await asyncio.shield(writer.wait_closed())
-        else:
-            print('No conference to cancel')
-
-
-    async def keep_share(self, data_type, port, capture_function, compress=None, fps=1):
-        # 持续分享数据
-        reader, writer = await asyncio.open_connection(SERVER_IP, port)
-        
-        print(f'keep_share Client writer is using port: {writer.get_extra_info("sockname")[1]}')
-        try:
-            while self.on_meeting:
-                data = capture_function()
-                # print(f'Sharing {data_type} on port {port}')
-                # print(data)
-                if compress:
-                    data = compress(data)
-                # print(f'Sending {len(data)} bytes')
-
-                writer.write(data)
-                await writer.drain()
-                # await asyncio.sleep(5)
-                await asyncio.sleep(1/fps)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            print(f'Stop sharing {data_type} on port {port}')
-            writer.close()
-            await writer.wait_closed()
-
-    ## todo: implement this function
-    def share_switch(self, data_type):
-        # 切换分享某种类型的数据（屏幕、摄像头、音频等）
-        pass
-
-    async def keep_recv(self, data_type, port, decompress=None):
-        # 持续接收数据
-        reader, writer = await asyncio.open_connection(SERVER_IP, port)
-        print(f'keep_recv Client writer is using port: {writer.get_extra_info("sockname")[1]}')
-        # writer = self.writer
-        # reader = self.reader
-        try:
-            while self.on_meeting:
-                # print(f'Receiving {data_type} on port {port}')
-                data = bytearray()
-                print(f'Receiving {data_type} on port {port}')
-                data = bytearray()
-                while True:
-                    chunk = await reader.read(1024*1024)
-                    # print(f'Received {len(chunk)} bytes')
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-                    if len(chunk)<131072:
-                        break
-
-                # print(f'Received {len(data)} bytes')
-
-                if len(data) == 20:
-                    # quit when no data received
-                    await self.quit_conference()
-
-                if decompress:
-                    data = decompress(data)
-                
-                self.share_data[data_type] = data
-        except asyncio.CancelledError:
-            pass
-        finally:
-            print(f'Stop receiving {data_type} on port {port}')
-            writer.close()
-            await writer.wait_closed()
+                # 如果有效负载较小，直接发送
+                await self.send_rtp_packet(payload, 1, 1)
+            await asyncio.sleep(1 / self.fps)
 
     async def output_data(self):
         # 输出数据
-        while self.on_meeting:
+        while True:
             # print('Output data: ', self.share_data.keys())
             # 显示接收到的数据
             if 'screen' in self.share_data:
@@ -183,6 +143,7 @@ class ConferenceClient:
                 camera_images = [self.share_data['camera']]
             else:
                 camera_images = None
+            print("share_data: ", self.share_data)
             display_image = overlay_camera_images(screen_image, camera_images)
             if display_image:
                 img_array = np.array(display_image)
@@ -196,74 +157,127 @@ class ConferenceClient:
             if 'audio' in self.share_data:
                 audio_data = self.share_data['audio']
                 play_audio(audio_data)
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.02)
 
-            # if 'text' in self.share_data:
-            #     print(self.share_data['text'])
+class ConferenceClient:
+    def __init__(self):
+        self.is_working = True
+        self.server_addr = (SERVER_IP, MAIN_SERVER_PORT)
+        self.on_meeting = False
+        self.conference_id = None
+        self.conf_serve_port = None
+        self.data_serve_ports = {}
+        # self.recv_tasks = []
+        # self.send_tasks = []
+        self.tasks = []
+        self.data_server = []
+        # 连接服务器
+        # self.loop = asyncio.get_event_loop()
+        self.received_chunks = {}
+        self.share_data = {}
 
-    async def start_conference(self):
-        # 启动会议
-        # 启动数据接收和发送任务
-        for data_type, port in self.data_serve_ports.items():
-            if data_type in ['screen', 'camera']:
-                # print(f'Start sharing {data_type} on port {port}')
-                send_task = asyncio.create_task(self.keep_share(
-                    data_type, port,
-                    capture_function=capture_screen if data_type == 'screen' else capture_camera,
-                    compress=compress_image))
-                recv_task = asyncio.create_task(self.keep_recv(
-                    data_type, port, decompress=decompress_image))
-            elif data_type == 'audio':
-                send_task = asyncio.create_task(self.keep_share(
-                    data_type, port, capture_function=capture_voice))
-                recv_task = asyncio.create_task(self.keep_recv(
-                    data_type, port))
-            # elif data_type == 'text':
-            #     send_task = asyncio.create_task(self.keep_share(
-            #         data_type, port, capture_function=capture_text))
-            #     recv_task = asyncio.create_task(self.keep_recv(
-            #         data_type, port))
-            self.send_tasks.append(send_task)
-            self.recv_tasks.append(recv_task)
 
-        # 启动输出任务
-        output_task = asyncio.create_task(self.output_data())
-        self.recv_tasks.append(output_task)
-
-        tasks = self.recv_tasks + self.send_tasks
-        # print('Tasks: ', tasks)
-        await asyncio.gather(*tasks)
-        # for task in tasks:
-        #     print('Task: ', task)
-        #     asyncio.run(task)
-
-    async def list_conference(self):
-        # 列出会议
+    async def create_conference(self):
         reader, writer = await asyncio.open_connection(*self.server_addr)
-        writer.write('LIST_CONFERENCE\n'.encode())
+        writer.write('CREATE_CONFERENCE\n'.encode())
         await writer.drain()
         data = await reader.readline()
         message = data.decode().strip()
-        print('Message: ', message)
-        if message.startswith('CONFERENCE_LIST'):
-            conf_list = message.split(' ')
-            if len(conf_list) == 1:
-                print('No conference')
-            else:
-                # conf_list = eval(conf_list)
-                conf_list = conf_list[1:]
-                print('Conference List:')
-                for conf in conf_list:
-                    print("Conference", conf)
+        if message.startswith('CREATE_OK'):
+            _, conf_id, conf_port, data_ports = message.split(' ', 3)
+            self.conference_id = int(conf_id)
+            self.conf_serve_port = int(conf_port)
+            self.data_serve_ports = eval(data_ports)
+            self.on_meeting = True
+            print(f'Conference {self.conference_id} created')
+            await self.start_conference()
         else:
-            print('Failed to list conference')
+            print('Failed to create conference')
         writer.close()
         await writer.wait_closed()
 
+    async def join_conference(self, conference_id):
+        reader, writer = await asyncio.open_connection(*self.server_addr)
+        writer.write(f'JOIN_CONFERENCE {conference_id}\n'.encode())
+        await writer.drain()
+        data = await reader.readline()
+        message = data.decode().strip()
+        if message.startswith('JOIN_OK'):
+            _, conf_id, conf_port, data_ports = message.split(' ', 3)
+            self.conference_id = int(conf_id)
+            self.conf_serve_port = int(conf_port)
+            self.data_serve_ports = eval(data_ports)
+            self.on_meeting = True
+            print(f'Joined conference {self.conference_id}')
+            await self.start_conference()
+        else:
+            print('Failed to join conference')
+        writer.close()
+        await writer.wait_closed()
+
+    async def quit_conference(self):
+        self.on_meeting = False
+        for task in self.recv_tasks + self.send_tasks:
+            task.cancel()
+        print('Quit conference')
+
+    async def cancel_conference(self):
+        if self.on_meeting:
+            self.on_meeting = False
+            # todo: cancle the conference on server side
+            for task in self.recv_tasks + self.send_tasks:
+                task.cancel()
+            print('Conference canceled')
+        else:
+            print('No conference to cancel')
+
+    ## todo: implement this function
+    def share_switch(self, data_type):
+        '''
+        switch for sharing certain type of data (screen, camera, audio, etc.)
+        '''
+        pass
+
+    async def start_conference(self):
+        # 启动数据接收和发送任务
+        for data_type, port in self.data_serve_ports.items():
+            if data_type in ['screen', 'camera']:
+                print(f'Start sharing {data_type} on port {port}')
+                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
+                                                data_type,
+                                                capture_function=capture_screen
+                                                    if data_type == 'screen' else capture_camera,
+                                                compress=compress_image,
+                                                decompress=decompress_image, 
+                                                share_data=self.share_data)
+                # send_task = asyncio.create_task(self.keep_share(
+                #     data_type, port,
+                    # capture_function=capture_screen if data_type == 'screen' else capture_camera,
+                    # compress=compress_image))
+                # recv_task = asyncio.create_task(self.keep_recv(
+                #     data_type, port, decompress=decompress_image))
+            elif data_type == 'audio':
+                print(f'Start sharing {data_type} on port {port}')
+                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
+                                                data_type,
+                                                capture_function=capture_voice, 
+                                                share_data=self.share_data)
+                # send_task = asyncio.create_task(self.keep_share(
+                #     data_type, port, capture_function=capture_voice))
+                # recv_task = asyncio.create_task(self.keep_recv(
+                #     data_type, port))
+                # await data_server.start_client()
+            self.tasks.append(asyncio.create_task(data_server.start_client()))
+            self.data_server.append(data_server)
+        
+        await asyncio.gather(*self.tasks)
+
+            # self.send_tasks.append(send_task)
+            # self.recv_tasks.append(recv_task)
+        # while self.on_meeting:
+        #     await asyncio.sleep(1)
 
     async def start(self):
-        # 启动客户端
-        loop = asyncio.get_event_loop()
         while True:
             if not self.on_meeting:
                 status = 'Free'
@@ -271,10 +285,7 @@ class ConferenceClient:
                 status = f'OnMeeting-{self.conference_id}'
 
             recognized = True
-            print(f'({status}) Please enter a operation (enter "?" to help): ')
-            cmd_input = await loop.run_in_executor(None, input)
-            cmd_input = cmd_input.strip().lower()
-            # cmd_input = input(f'({status}) Please enter a operation (enter "?" to help): ')
+            cmd_input = input(f'({status}) Please enter a operation (enter "?" to help): ').strip().lower()
             fields = cmd_input.split(maxsplit=1)
             if len(fields) == 1:
                 if cmd_input in ('?', '？'):
@@ -285,8 +296,6 @@ class ConferenceClient:
                     await self.quit_conference()
                 elif cmd_input == 'cancel':
                     await self.cancel_conference()
-                elif cmd_input == 'list':
-                    await self.list_conference()
                 else:
                     recognized = False
             elif len(fields) == 2:
@@ -308,45 +317,3 @@ class ConferenceClient:
 if __name__ == '__main__':
     client = ConferenceClient()
     asyncio.run(client.start())
-
-#     async def start(self):
-#         while True:
-#             if not self.on_meeting:
-#                 status = 'Free'
-#             else:
-#                 status = f'OnMeeting-{self.conference_id}'
-
-#             recognized = True
-#             cmd_input = input(f'({status}) Please enter a operation (enter "?" to help): ')
-#             cmd_input = cmd_input.strip().lower()
-#             fields = cmd_input.split(maxsplit=1)
-#             if len(fields) == 1:
-#                 if cmd_input in ('?', '？'):
-#                     print(HELP)
-#                 elif cmd_input == 'create':
-#                     asyncio.create_task(self.create_conference())
-#                 elif cmd_input == 'quit':
-#                     asyncio.create_task(self.quit_conference())
-#                 elif cmd_input == 'cancel':
-#                     asyncio.create_task(self.cancel_conference())
-#                 else:
-#                     recognized = False
-#             elif len(fields) == 2:
-#                 if fields[0] == 'join':
-#                     input_conf_id = fields[1]
-#                     if input_conf_id.isdigit():
-#                         asyncio.create_task(self.join_conference(int(input_conf_id)))
-#                     else:
-#                         print('[Warn]: Input conference ID must be in digital form')
-#                 else:
-#                     recognized = False
-#             else:
-#                 recognized = False
-
-#             if not recognized:
-#                 print(f'[Warn]: Unrecognized cmd_input {cmd_input}')
-
-# # 修改主程序入口
-# if __name__ == '__main__':
-#     client = ConferenceClient()
-#     asyncio.run(client.start())

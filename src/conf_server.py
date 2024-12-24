@@ -102,6 +102,7 @@ class ConferenceServer:
             data_server = RTPServer(SERVER_IP, port)
             await data_server.start_server()
             data_server_sockets[data_type] = data_server.transport
+            print(f'RTP Data server for {data_type} started on port {port}')
 
         # Start conference server and data servers handling in parallel
         # tasks = [
@@ -129,8 +130,8 @@ class MainServer:
         # 分配端口（简单实现，可以根据需要修改）
         conf_serve_port = MAIN_SERVER_PORT + conference_id * 10
         data_serve_ports = {
-            'screen': conf_serve_port + 1,
-            # 'camera': conf_serve_port + 2,
+            # 'screen': conf_serve_port + 1,
+            'camera': conf_serve_port + 2,
             # 'audio': conf_serve_port + 3,
         }
 

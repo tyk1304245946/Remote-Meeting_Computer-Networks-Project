@@ -10,6 +10,8 @@ import pyautogui
 import numpy as np
 from PIL import Image, ImageGrab, UnidentifiedImageError
 from config import *
+import mss
+import mss.tools
 
 
 # audio setting
@@ -79,7 +81,7 @@ def overlay_camera_images(screen_image, camera_images):
             adjusted_camera_width = screen_width // len(camera_images)
             adjusted_camera_height = (adjusted_camera_width * camera_height) // camera_width
             camera_images = [img.resize((adjusted_camera_width, adjusted_camera_height), Image.LANCZOS) for img in
-                             camera_images]
+                                camera_images]
             camera_width, camera_height = adjusted_camera_width, adjusted_camera_height
             num_cameras_per_row = len(camera_images)
 
@@ -98,7 +100,7 @@ def overlay_camera_images(screen_image, camera_images):
 
         return display_image
     else:
-        return screen_image
+        return
 
 
 def capture_screen():
@@ -123,7 +125,7 @@ def play_audio(audio_data):
     streamout.write(audio_data)
 
 
-def compress_image(image, format='JPEG', quality=85):
+def compress_image(image, format='JPEG', quality=50):
     """
     compress image and output Bytes
 
@@ -135,7 +137,7 @@ def compress_image(image, format='JPEG', quality=85):
     buffer = BytesIO()
     # Save the image to the buffer in the desired format and quality
     image.save(buffer, format=format, quality=quality)
-    buffer.seek(0)  # Reset buffer position
+    buffer.seek(0)              # Reset buffer position
     compressed_image_data = buffer.getvalue()
     buffer.close()
     return compressed_image_data
@@ -148,7 +150,7 @@ def decompress_image(image_bytes):
     img_byte_arr = BytesIO(image_bytes)
     try:
         image = Image.open(img_byte_arr)
-        image.load()  # Force loading the image to check if it's valid
+        image.load()                    # Force loading the image to check if it's valid
     except UnidentifiedImageError:
         print("The image file could not be identified.")
         return None

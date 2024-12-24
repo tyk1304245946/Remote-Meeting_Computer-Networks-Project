@@ -55,17 +55,21 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         # print(f"Received data from {addr}")
         # RTP头12字节
         header = data[:12]
+        # print(f"Received data from {addr}: {header}")
         payload = data[12:]
 
         # Extract chunk information from the header (after RTP header)
         chunk_info = struct.unpack('!HH', payload[:4])  # First 4 bytes for chunk index and total chunks
         chunk_index, total_chunks = chunk_info
+        
 
         user_info = payload[4:8]
         user_name = USER_NAME + user_info.decode()
         print(f"Received data from {addr}: {user_name}")
 
         payload_data = payload[8:]
+
+        print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
 
         # Add the chunk to the dictionary
         if chunk_index not in self.frame_chunks:
@@ -74,17 +78,21 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.frame_chunks[chunk_index].append(payload_data)
 
         # If we have received all chunks for a frame, reassemble and process the frame
-        if len(self.frame_chunks) == total_chunks:
+        if len(self.frame_chunks) >= total_chunks:
+            # try:
             # Reassemble all chunks into the full payload (frame)
             full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
-            # print(f"Reassembled full frame of size {len(full_frame)} bytes")
-
+            print(f"Reassembled full frame of size {len(full_frame)} bytes")
+            self.frame_chunks.clear()
+            print(f"frame_chunks {self.frame_chunks}")
             if self.decompress:
                 full_frame = self.decompress(full_frame)
             self.share_data[self.datatype] = full_frame
 
             # Clear the frame chunks for the next frame
-            self.frame_chunks.clear()
+            # self.frame_chunks.clear()
+            # except Exception as e:
+            #     self.frame_chunks.clear()
 
     async def send_rtp_packet(self, payload, chunk_index, total_chunks):
         """构建并发送 RTP 数据包，支持分块传输"""
@@ -378,15 +386,15 @@ class ConferenceClient:
                                                 self, data_type,
                                                 fps=15,
                                                 capture_function=capture_screen,
-                                                compress=compress_image,
-                                                decompress=decompress_image)
+                                                compress=compress_screen,
+                                                decompress=decompress_screen)
             elif data_type == 'camera':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id, self.username,
                                                 self, data_type,
                                                 fps=15,
                                                 capture_function=capture_camera,
-                                                compress=compress_image,
-                                                decompress=decompress_image)
+                                                compress=compress_screen,
+                                                decompress=decompress_screen)
 
             elif data_type == 'audio':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id, self.username,

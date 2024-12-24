@@ -102,6 +102,7 @@ class ConferenceServer:
             data_server = RTPServer(SERVER_IP, port)
             await data_server.start_server()
             data_server_sockets[data_type] = data_server.transport
+            print(f'RTP Data server for {data_type} started on port {port}')
 
         # Start conference server and data servers handling in parallel
         # tasks = [

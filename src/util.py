@@ -35,7 +35,7 @@ my_screen_size = pyautogui.size()
 def resize_image_to_fit_screen(image, my_screen_size):
     screen_width, screen_height = my_screen_size
 
-    original_height, original_width = image.shape[:2]
+    original_width, original_height = image.size
 
     aspect_ratio = original_width / original_height
 
@@ -49,15 +49,15 @@ def resize_image_to_fit_screen(image, my_screen_size):
         new_height = int(new_width / aspect_ratio)
 
     # resize the image
-    resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    resized_image = image.resize((new_width, new_height), Image.LANCZOS)
 
     return resized_image
 
 
 def overlay_camera_images(screen_image, camera_images):
     """
-    screen_image: np.array
-    camera_images: list[np.array]
+    screen_image: PIL.Image
+    camera_images: list[PIL.Image]
     """
     if screen_image is None and camera_images is None:
         print('[Warn]: cannot display when screen and camera are both None')
@@ -67,11 +67,11 @@ def overlay_camera_images(screen_image, camera_images):
 
     if camera_images is not None:
         # make sure same camera images
-        if not all(img.shape == camera_images[0].shape for img in camera_images):
+        if not all(img.size == camera_images[0].size for img in camera_images):
             raise ValueError("All camera images must have the same size")
 
-        screen_height, screen_width = my_screen_size if screen_image is None else screen_image.shape[:2]
-        camera_height, camera_width = camera_images[0].shape[:2]
+        screen_width, screen_height = my_screen_size if screen_image is None else screen_image.size
+        camera_width, camera_height = camera_images[0].size
 
         # calculate num_cameras_per_row
         num_cameras_per_row = screen_width // camera_width
@@ -80,13 +80,14 @@ def overlay_camera_images(screen_image, camera_images):
         if len(camera_images) > num_cameras_per_row:
             adjusted_camera_width = screen_width // len(camera_images)
             adjusted_camera_height = (adjusted_camera_width * camera_height) // camera_width
-            camera_images = [cv2.resize(img, (adjusted_camera_width, adjusted_camera_height), interpolation=cv2.INTER_AREA) for img in camera_images]
+            camera_images = [img.resize((adjusted_camera_width, adjusted_camera_height), Image.LANCZOS) for img in
+                             camera_images]
             camera_width, camera_height = adjusted_camera_width, adjusted_camera_height
             num_cameras_per_row = len(camera_images)
 
         # if no screen_img, create a container
         if screen_image is None:
-            display_image = np.zeros((camera_height, my_screen_size[0], 3), dtype=np.uint8)
+            display_image = Image.fromarray(np.zeros((camera_width, my_screen_size[1], 3), dtype=np.uint8))
         else:
             display_image = screen_image
         # cover screen_img using camera_images
@@ -95,11 +96,11 @@ def overlay_camera_images(screen_image, camera_images):
             col = i % num_cameras_per_row
             x = col * camera_width
             y = row * camera_height
-            display_image[y:y+camera_height, x:x+camera_width] = camera_image
+            display_image.paste(camera_image, (x, y))
 
         return display_image
     else:
-        return
+        return screen_image
 
 
 def capture_screen():
@@ -109,14 +110,21 @@ def capture_screen():
     return screen_image
 
 
+# def capture_camera():
+#     # capture frame of camera
+#     ret, frame = cap.read()
+#     if not ret:
+#         raise Exception('Fail to capture frame from camera')
+#     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#     camera_image = Image.fromarray(frame)
+#     return camera_image
+
 def capture_camera():
     # capture frame of camera
     ret, frame = cap.read()
     if not ret:
         raise Exception('Fail to capture frame from camera')
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    camera_image = Image.fromarray(frame)
-    return camera_image
+    return Image.fromarray(frame)
 
 
 def capture_voice():
@@ -126,7 +134,7 @@ def play_audio(audio_data):
     streamout.write(audio_data)
 
 
-def compress_image(frame, format='JPEG', quality=85):
+def compress_image(frame, format='JPEG', quality=50):
     """
     compress image and output Bytes
 
@@ -139,7 +147,15 @@ def compress_image(frame, format='JPEG', quality=85):
     payload = encoded_frame.tobytes()
     return payload
 
-def decompress_image(payload):
-    np_arr = np.frombuffer(payload, np.uint8)
-    image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+def decompress_image(image_bytes):
+    """
+    Decompress bytes to PIL.Image.
+    """
+    img_byte_arr = BytesIO(image_bytes)
+    try:
+        image = Image.open(img_byte_arr)
+        image.load()  # Force loading the image to check if it's valid
+    except UnidentifiedImageError:
+        print("The image file could not be identified.")
+        return None
     return image

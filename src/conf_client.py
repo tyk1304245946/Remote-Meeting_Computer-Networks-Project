@@ -7,7 +7,7 @@ from config import *
 
 
 class RTPClientProtocol(asyncio.DatagramProtocol):
-    def __init__(self, host, port, datatype, capture_function, compress=None, fps=30, decompress=None):
+    def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=30, decompress=None):
         self.host = host
         self.port = port
         self.transport = None
@@ -20,6 +20,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.frame_chunks = {}
         self.chunk_size = 50000
         self.frame_number = 0
+        self.conference_id = conference_id
 
 
     async def start_client(self):
@@ -43,7 +44,6 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
 
     def connection_made(self, transport):
         self.transport = transport
-    
 
     def datagram_received(self, data, addr):
         print(f"Received data from {addr}")
@@ -130,26 +130,22 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             await asyncio.sleep(1 / self.fps)
 
     async def output_data(self):
+        # 输出数据
         while True:
-            print('Output data: ', self.share_data.keys())
+            # print('Output data: ', self.share_data.keys())
             # 显示接收到的数据
-            # print(self.share_data)
             if 'screen' in self.share_data:
                 screen_image = self.share_data['screen']
             else:
                 screen_image = None
             if 'camera' in self.share_data:
                 camera_images = [self.share_data['camera']]
-                print(type(self.share_data['camera']))
-                print(type(camera_images))
             else:
                 camera_images = None
             display_image = overlay_camera_images(screen_image, camera_images)
-            # display_image = screen_image
-            if display_image is not None:
-                # print(123, len(display_image))
+            if display_image:
                 img_array = np.array(display_image)
-                cv2.imshow('Conference', cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
+                cv2.imshow('Conference '+str(self.conference_id), cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
                 cv2.waitKey(1)
             else:
                 ## todo: 显示黑框
@@ -344,7 +340,8 @@ class ConferenceClient:
         for data_type, port in self.data_serve_ports.items():
             if data_type in ['screen', 'camera']:
                 print(f'Start sharing {data_type} on port {port}')
-                data_server = RTPClientProtocol(SERVER_IP, port, data_type,
+                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
+                                                data_type,
                                                 capture_function=capture_screen
                                                     if data_type == 'screen' else capture_camera,
                                                 compress=compress_image,
@@ -357,7 +354,8 @@ class ConferenceClient:
                 # recv_task = asyncio.create_task(self.keep_recv(
                 #     data_type, port, decompress=decompress_image))
             elif data_type == 'audio':
-                data_server = RTPClientProtocol(SERVER_IP, port, data_type,
+                data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
+                                                data_type,
                                                 capture_function=capture_voice)
                 # send_task = asyncio.create_task(self.keep_share(
                 #     data_type, port, capture_function=capture_voice))

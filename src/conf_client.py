@@ -143,7 +143,6 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
                 camera_images = [self.share_data['camera']]
             else:
                 camera_images = None
-            print("share_data: ", self.share_data)
             display_image = overlay_camera_images(screen_image, camera_images)
             if display_image:
                 img_array = np.array(display_image)
@@ -175,7 +174,6 @@ class ConferenceClient:
         # self.loop = asyncio.get_event_loop()
         self.received_chunks = {}
         self.share_data = {}
-
 
     async def create_conference(self):
         reader, writer = await asyncio.open_connection(*self.server_addr)
@@ -250,6 +248,7 @@ class ConferenceClient:
                                                 compress=compress_image,
                                                 decompress=decompress_image, 
                                                 share_data=self.share_data)
+
                 # send_task = asyncio.create_task(self.keep_share(
                 #     data_type, port,
                     # capture_function=capture_screen if data_type == 'screen' else capture_camera,

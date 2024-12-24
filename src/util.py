@@ -56,7 +56,7 @@ def resize_image_to_fit_screen(image, my_screen_size):
 
 def overlay_camera_images(screen_image, camera_images):
     """
-    screen_image: cv2 frame
+    screen_image: PIL.Image
     camera_images: list[PIL.Image]
     """
     if screen_image is None and camera_images is None:
@@ -100,15 +100,14 @@ def overlay_camera_images(screen_image, camera_images):
 
         return display_image
     else:
-        return screen_image
+        return
 
 
 def capture_screen():
-    with mss.mss() as sct:
-        monitor = sct.monitors[1]
-        frame = np.array(sct.grab(monitor))
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
-    return frame
+    # capture screen with the resolution of display
+    # img = pyautogui.screenshot()
+    img = ImageGrab.grab()
+    return img
 
 
 def capture_camera():
@@ -116,7 +115,7 @@ def capture_camera():
     ret, frame = cap.read()
     if not ret:
         raise Exception('Fail to capture frame from camera')
-    return frame
+    return Image.fromarray(frame)
 
 
 def capture_voice():
@@ -126,28 +125,33 @@ def play_audio(audio_data):
     streamout.write(audio_data)
 
 
-def compress_image(frame):
-    # buffer = BytesIO()
-    # # Save the image to the buffer in the desired format and quality
-    # image.save(buffer, format=format, quality=quality)
-    # buffer.seek(0)  # Reset buffer position
-    # compressed_image_data = buffer.getvalue()
-    # buffer.close()
-    # return compressed_image_data
-    _, encoded_frame = cv2.imencode('.jpg', frame)
-    payload = encoded_frame.tobytes()
-    return payload
+def compress_image(image, format='JPEG', quality=50):
+    """
+    compress image and output Bytes
+
+    :param image: PIL.Image, input image
+    :param format: str, output format ('JPEG', 'PNG', 'WEBP', ...)
+    :param quality: int, compress quality (0-100), 85 default
+    :return: bytes, compressed image data
+    """
+    buffer = BytesIO()
+    # Save the image to the buffer in the desired format and quality
+    image.save(buffer, format=format, quality=quality)
+    buffer.seek(0)              # Reset buffer position
+    compressed_image_data = buffer.getvalue()
+    buffer.close()
+    return compressed_image_data
 
 
-def decompress_image(payload):
-    # img_byte_arr = BytesIO(image_bytes)
-    # try:
-    #     image = Image.open(img_byte_arr)
-    #     image.load()  # Force loading the image to check if it's valid
-    # except UnidentifiedImageError:
-    #     print("The image file could not be identified.")
-    #     return None
-    # return image
-    np_arr = np.frombuffer(payload, dtype=np.uint8)
-    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-    return frame
+def decompress_image(image_bytes):
+    """
+    Decompress bytes to PIL.Image.
+    """
+    img_byte_arr = BytesIO(image_bytes)
+    try:
+        image = Image.open(img_byte_arr)
+        image.load()                    # Force loading the image to check if it's valid
+    except UnidentifiedImageError:
+        print("The image file could not be identified.")
+        return None
+    return image

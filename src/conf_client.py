@@ -27,15 +27,16 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
 
         # asyncio.create_task(self.send_datagram())
         # asyncio.create_task(self.stream_video())
-        asyncio.create_task(self.stream_screen())
-        asyncio.create_task(self.output_data())
+        # asyncio.create_task(self.stream_screen())
+        # asyncio.create_task(self.output_data())
 
-        # self.tasks = [
+        self.tasks = [
         #     # asyncio.create_task(self.send_datagram()),
-        #     asyncio.create_task(self.stream_screen()),
-        #     asyncio.create_task(self.output_data())
-        # ]
-        # await asyncio.gather(*self.tasks)
+        #     # asyncio.create_task(self.stream_screen()),
+            asyncio.create_task(self.stream_video()),
+            asyncio.create_task(self.output_data())
+        ]
+        await asyncio.gather(*self.tasks)
 
     def connection_made(self, transport):
         self.transport = transport
@@ -61,17 +62,20 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.share_data[self.datatype] = payload
 
     async def stream_video(self):
-        cap = cv2.VideoCapture(0)
+        # cap = cv2.VideoCapture(0)
         frame_number = 0
 
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+        while True:
+            # ret, frame = cap.read()
+            # if not ret:
+            #     break
 
-            _, encoded_frame = cv2.imencode('.jpg', frame)
-            payload = encoded_frame.tobytes()
+            # frame = capture_camera()
+            frame = capture_screen()
+            
+            payload = compress_image(frame)
 
+            print(len(payload))
             version = 2
             payload_type = 26  # JPEG
             sequence_number = frame_number
@@ -89,7 +93,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
 
             self.transport.sendto(rtp_packet)
             frame_number += 1
-            await asyncio.sleep(1 / self.fps)  # 30 FPS
+            await asyncio.sleep(1 / 1)  # 30 FPS
 
         cap.release()
         cv2.destroyAllWindows()
@@ -174,6 +178,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             else:
                 camera_images = None
             display_image = overlay_camera_images(screen_image, camera_images)
+            # display_image = screen_image
             if display_image is not None:
                 img_array = np.array(display_image)
                 cv2.imshow('Conference', cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))

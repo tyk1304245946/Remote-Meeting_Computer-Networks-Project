@@ -81,8 +81,9 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             # Reassemble all chunks into the full payload (frame)
             full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
             # print(f"Reassembled full frame of size {len(full_frame)} bytes")
-
-            if self.decompress:
+            if full_frame == b'EMPTY_FRAME':
+                full_frame = None
+            elif self.decompress:
                 full_frame = self.decompress(full_frame)
             self.share_data[self.datatype] = full_frame
 
@@ -122,7 +123,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         while True:
             if not self.enable:
                 if self.datatype in ['screen', 'camera']:
-                    payload = Image.fromarray(np.zeros((my_screen_size[1], my_screen_size[0], 3), dtype=np.uint8), 'RGB')
+                    payload = b'EMPTY_FRAME'
                 else:
                     payload = b''
             else:
@@ -175,7 +176,7 @@ class ConferenceClient:
                 screen_image = self.share_data['screen']
             else:
                 screen_image = None
-            if 'camera' in self.share_data:
+            if 'camera' in self.share_data and self.share_data['camera'] is not None:
                 camera_images = [self.share_data['camera']]
             else:
                 camera_images = None
@@ -413,8 +414,6 @@ class ConferenceClient:
                     await self.cancel_conference()
                 elif cmd_input == 'list':
                     await self.list_conference()
-                elif cmd_input == 'screen':
-                    await self.share_switch('screen')
                 elif cmd_input == 'camera':
                     await self.share_switch('camera')
                 elif cmd_input == 'audio':

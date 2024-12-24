@@ -1,5 +1,8 @@
 import asyncio
 from util import *
+from random import randint
+import string
+from datetime import datetime
 from config import *
 
 
@@ -17,6 +20,9 @@ class ConferenceClient:
         self.send_tasks = []
         # 连接服务器
         self.loop = asyncio.get_event_loop()
+        self.username = USER_NAME+str(randint(0, 9999))
+        self.text_reader = None
+        self.text_writer = None
 
 
     async def create_conference(self):
@@ -57,6 +63,7 @@ class ConferenceClient:
             self.conference_id = int(conf_id)
             self.conf_serve_port = int(conf_port)
             self.data_serve_ports = eval(data_ports)
+            self.text_reader, self.text_writer = await asyncio.open_connection(SERVER_IP, self.data_serve_ports['text'])
             self.on_meeting = True
             print(f'Joined conference {self.conference_id}')
             # await self.start_conference()
@@ -101,7 +108,6 @@ class ConferenceClient:
         else:
             print('No conference to cancel')
 
-
     async def keep_share(self, data_type, port, capture_function, compress=None, fps=1):
         # 持续分享数据
         reader, writer = await asyncio.open_connection(SERVER_IP, port)
@@ -115,7 +121,6 @@ class ConferenceClient:
                 if compress:
                     data = compress(data)
                 # print(f'Sending {len(data)} bytes')
-
                 writer.write(data)
                 await writer.drain()
                 # await asyncio.sleep(5)
@@ -142,8 +147,6 @@ class ConferenceClient:
             while self.on_meeting:
                 # print(f'Receiving {data_type} on port {port}')
                 data = bytearray()
-                print(f'Receiving {data_type} on port {port}')
-                data = bytearray()
                 while True:
                     chunk = await reader.read(1024*1024)
                     # print(f'Received {len(chunk)} bytes')
@@ -152,7 +155,6 @@ class ConferenceClient:
                     data.extend(chunk)
                     if len(chunk)<131072:
                         break
-
                 # print(f'Received {len(data)} bytes')
 
                 if len(data) == 20:
@@ -204,6 +206,8 @@ class ConferenceClient:
     async def start_conference(self):
         # 启动会议
         # 启动数据接收和发送任务
+        self.text_reader, self.text_writer = await asyncio.open_connection(SERVER_IP, self.data_serve_ports['text'])
+        print(f'start_conference Client writer is using port: {self.text_writer.get_extra_info("sockname")[1]}')
         for data_type, port in self.data_serve_ports.items():
             if data_type in ['screen', 'camera']:
                 # print(f'Start sharing {data_type} on port {port}')
@@ -218,11 +222,8 @@ class ConferenceClient:
                     data_type, port, capture_function=capture_voice))
                 recv_task = asyncio.create_task(self.keep_recv(
                     data_type, port))
-            # elif data_type == 'text':
-            #     send_task = asyncio.create_task(self.keep_share(
-            #         data_type, port, capture_function=capture_text))
-            #     recv_task = asyncio.create_task(self.keep_recv(
-            #         data_type, port))
+            elif data_type == 'text':
+                recv_task = asyncio.create_task(self.recv_text())
             self.send_tasks.append(send_task)
             self.recv_tasks.append(recv_task)
 
@@ -260,10 +261,36 @@ class ConferenceClient:
         writer.close()
         await writer.wait_closed()
 
+    async def send_text(self, text):
+        # 发送文本消息
+        # print(self.data_serve_ports)
+        # port = self.data_serve_ports['text']
+        # reader, writer = await asyncio.open_connection(SERVER_IP, port)
+        writer = self.text_writer
+        writer.write(text.encode())
+        print(f'text_me: {text}')
+        # await writer.drain()
+        # writer.close()
+        # await writer.wait_closed()
+
+    async def recv_text(self):
+        # 接收文本消息
+        # port = self.data_serve_ports['text']
+        # reader, writer = await asyncio.open_connection(SERVER_IP, port)
+        reader= self.text_reader
+        while self.on_meeting:
+            data = await reader.readline()
+            message = data.decode().strip()
+            if len(message) != 0:
+                print("text: "+message)
+            # writer.close()
+            # await writer.wait_closed()
+            await asyncio.sleep(1)
 
     async def start(self):
         # 启动客户端
         loop = asyncio.get_event_loop()
+        print("Client started, your username is: ", self.username)
         while True:
             if not self.on_meeting:
                 status = 'Free'
@@ -289,7 +316,7 @@ class ConferenceClient:
                     await self.list_conference()
                 else:
                     recognized = False
-            elif len(fields) == 2:
+            elif len(fields) == 2 and fields[0] != 'text':
                 if fields[0] == 'join':
                     input_conf_id = fields[1]
                     if input_conf_id.isdigit():
@@ -298,6 +325,18 @@ class ConferenceClient:
                         print('[Warn]: Input conference ID must be in digital form')
                 else:
                     recognized = False
+            elif fields[0] == 'text':
+                if len(fields) >= 2:
+                    text = ''
+                    for i in range(1, len(fields)):
+                        text += ' ' + fields[i]
+                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    full_message = f'[{timestamp}] {self.username}: {text}\n'
+                    # print(full_message)
+                    await self.send_text(full_message)
+                else:
+                    recognized = False
+                        
             else:
                 recognized = False
 

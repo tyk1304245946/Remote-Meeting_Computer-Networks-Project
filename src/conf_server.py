@@ -30,7 +30,6 @@ class ConferenceServer:
                 while True:
                     chunk = await reader.read(1024*1024)
                     # print(f'Received {len(chunk)} bytes')
-
                     if not chunk:
                         break
                     data.extend(chunk)
@@ -39,7 +38,6 @@ class ConferenceServer:
                 self.data = data
                 # print("len: ", len(data))
 
-
                 if not data:
                     break
                 # 转发数据给其他客户端
@@ -47,8 +45,9 @@ class ConferenceServer:
                     if client_addr != addr:
                         client_writer.write(data)
                         await client_writer.drain()
+                        if data_type == 'text':
+                            print(f'Sending text to {client_addr}: {data.decode()}')
                         # print(f'Sending {len(data)} bytes to {client_addr}')
-
         except ConnectionResetError:
             pass
         finally:
@@ -57,35 +56,7 @@ class ConferenceServer:
             writer.close()
             await writer.wait_closed()
 
-    async def handle_text(self, reader, writer, data_type):
-        addr = writer.get_extra_info('peername')
-        port = writer.get_extra_info('sockname')[1]
-        if data_type not in self.client_conns:
-            self.client_conns[data_type] = {}
-        self.client_conns[data_type][addr] = writer
-        print(f'[Data] {data_type} connection from {addr} on port {port}')
-
-        try:
-            while self.running:
-                data = await reader.readline()
-                if not data:
-                    break
-                message = data.decode().strip()
-                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                full_message = f'[{timestamp}] {addr}: {message}'
-
-                for client_addr, client_writer in self.client_conns[data_type].items():
-                    if client_addr != addr:
-                        client_writer.write(f'{full_message}\n'.encode())
-                        await client_writer.drain()
-                        print(f'Sending {len(data)} bytes to {client_addr}')
-        except ConnectionResetError:
-            pass
-        finally:
-            print(f'[Text] Client disconnected: {addr}')
-            del self.client_conns[data_type][addr]
-            writer.close()
-            await writer.wait_closed()
+    
 
     async def handle_client(self, reader, writer):
         addr = writer.get_extra_info('peername')
@@ -177,7 +148,7 @@ class MainServer:
             'screen': conf_serve_port + 1,
             # 'camera': conf_serve_port + 2,
             # 'audio': conf_serve_port + 3,
-            # 'text': conf_serve_port + 4,
+            'text': conf_serve_port + 4,
         }
 
         # 创建并启动 ConferenceServer

@@ -1,7 +1,30 @@
 import asyncio
+import struct
 from config import *
 import asyncio
 import socket
+
+class RTPServer(asyncio.DatagramProtocol):
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.transport = None
+        self.client_address = None
+    
+    async def start_server(self):
+        loop = asyncio.get_event_loop()
+        self.transport, _ = await loop.create_datagram_endpoint(
+            lambda: self, local_addr=(self.host, self.port)
+        )
+        print(f"RTP Server started at {self.host}:{self.port}")
+    
+    ## todo: write a router
+    def datagram_received(self, data, addr):
+        forward_host = addr[0]
+        forward_port = addr[1]
+        print(f"Received data from {addr}, forwarding to {forward_host}:{forward_port}")
+        self.transport.sendto(data, (forward_host, forward_port))
+        print(len(data))
 
 class ConferenceServer:
     def __init__(self, conference_id, conf_serve_port, data_serve_ports):
@@ -13,37 +36,37 @@ class ConferenceServer:
         self.client_conns = {}  # {data_type: {client_addr: writer}}
         self.running = True
 
-    async def handle_data(self, data_type, server_socket):
-        data, addr1 = server_socket.recvfrom(65536)
-        port = addr1[1]
-        if data_type not in self.client_conns:
-            self.client_conns[data_type] = {}
-        self.client_conns[data_type][addr1] = server_socket
-        print(len(data))
-        print(f'[Data] {data_type} connection from {addr1} on port {port}')
+    # async def handle_data(self, data_type, server_socket):
+    #     data, addr1 = server_socket.recvfrom(65536)
+    #     port = addr1[1]
+    #     if data_type not in self.client_conns:
+    #         self.client_conns[data_type] = {}
+    #     self.client_conns[data_type][addr1] = server_socket
+    #     print(len(data))
+    #     print(f'[Data] {data_type} connection from {addr1} on port {port}')
 
-        try:
-            while self.running:
-                data, addr = server_socket.recvfrom(65536)
-                if addr != addr1:
-                    del self.client_conns[data_type][addr1]
-                    addr1 = addr
-                    self.client_conns[data_type][addr1] = server_socket
-                print(len(data))
-                print(f"Received {data_type} from {addr}")
-                print(self.client_conns)
-                if data:
-                    # Forward data to other clients
-                    for client_addr in self.client_conns[data_type]:
-                        # if client_addr != addr:
-                        server_socket.sendto(data, client_addr)
-        except ConnectionResetError:
-            pass
-        finally:
-            print(f'[Data] {data_type} connection closed: {addr}')
-            del self.client_conns[data_type][addr]
-            server_socket.close()
-            await server_socket.wait_closed()
+    #     try:
+    #         while self.running:
+    #             data, addr = server_socket.recvfrom(65536)
+    #             if addr != addr1:
+    #                 del self.client_conns[data_type][addr1]
+    #                 addr1 = addr
+    #                 self.client_conns[data_type][addr1] = server_socket
+    #             print(len(data))
+    #             print(f"Received {data_type} from {addr}")
+    #             print(self.client_conns)
+    #             if data:
+    #                 # Forward data to other clients
+    #                 for client_addr in self.client_conns[data_type]:
+    #                     # if client_addr != addr:
+    #                     server_socket.sendto(data, client_addr)
+    #     except ConnectionResetError:
+    #         pass
+    #     finally:
+    #         print(f'[Data] {data_type} connection closed: {addr}')
+    #         del self.client_conns[data_type][addr]
+    #         server_socket.close()
+    #         await server_socket.wait_closed()
 
     async def handle_client(self, reader, writer):
         addr = writer.get_extra_info('peername')
@@ -76,24 +99,20 @@ class ConferenceServer:
         # Create UDP sockets for data servers
         data_server_sockets = {}
         for data_type, port in self.data_serve_ports.items():
-            data_server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            data_server_socket.bind((SERVER_IP, port))
-
-            data_server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
-            data_server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
-
-            data_server_sockets[data_type] = data_server_socket
+            data_server = RTPServer(SERVER_IP, port)
+            await data_server.start_server()
+            data_server_sockets[data_type] = data_server.transport
 
         # Start conference server and data servers handling in parallel
         # tasks = [
         #     asyncio.create_task(self.handle_client(conf_server_socket))
         # ]
-        tasks = []
-        for data_type, server_socket in data_server_sockets.items():
-            tasks.append(asyncio.create_task(self.handle_data(data_type, server_socket)))
+        # tasks = []
+        # for data_type, server_socket in data_server_sockets.items():
+        #     tasks.append(asyncio.create_task(self.handle_data(data_type, server_socket)))
 
-        # Wait for the servers to stop
-        await asyncio.gather(*tasks)
+        # # Wait for the servers to stop
+        # await asyncio.gather(*tasks)
 
 
 class MainServer:

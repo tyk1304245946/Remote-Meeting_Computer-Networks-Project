@@ -15,7 +15,7 @@ class RTPServer(asyncio.DatagramProtocol):
         self.transport, _ = await loop.create_datagram_endpoint(
             lambda: self, local_addr=(self.host, self.port)
         )
-        print(f"Server started at {self.host}:{self.port}")
+        print(f"RTP Server started at {self.host}:{self.port}")
 
     def datagram_received(self, data, addr):
         print(f"Received connection from {addr}")

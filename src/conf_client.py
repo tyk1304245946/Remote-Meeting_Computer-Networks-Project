@@ -210,7 +210,7 @@ class ConferenceClient:
 
     async def create_conference(self):
         reader, writer = await asyncio.open_connection(*self.server_addr)
-        writer.write('CREATE_CONFERENCE\n'.encode())
+        writer.write(f'CREATE_CONFERENCE {self.username}\n'.encode())
         await writer.drain()
         data = await reader.readline()
         message = data.decode().strip()
@@ -229,7 +229,7 @@ class ConferenceClient:
 
     async def join_conference(self, conference_id):
         reader, writer = await asyncio.open_connection(*self.server_addr)
-        writer.write(f'JOIN_CONFERENCE {conference_id}\n'.encode())
+        writer.write(f'JOIN_CONFERENCE {conference_id} {self.username}\n'.encode())
         await writer.drain()
         data = await reader.readline()
         message = data.decode().strip()
@@ -250,6 +250,12 @@ class ConferenceClient:
     async def quit_conference(self):
         # 退出会议
         if self.on_meeting:
+            reader, writer = await asyncio.open_connection(*self.server_addr)
+            writer.write(f'QUIT_CONFERENCE {self.conference_id} {self.username}\n'.encode())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
             self.on_meeting = False
             self.conference_id = None
             self.conf_serve_port = None

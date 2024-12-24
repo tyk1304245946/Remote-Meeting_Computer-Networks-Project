@@ -84,14 +84,14 @@ class RTCPServer(asyncio.DatagramProtocol):
 
     async def send_message(self):
         while True:
-            print(self.client_conns)
+            # print(self.client_conns)
             if self.client_conns != {}:
                 client_num = len(self.client_conns['text'])
             else:
                 client_num = 0
             for addr in self.client_address:
                 message = f"Client_nums: {client_num}\n"
-                print(f"Sending RTCP message to {addr}: {message}")
+                # print(f"Sending RTCP message to {addr}: {message}")
                 self.transport.sendto(message.encode(), addr)
             await asyncio.sleep(2)
 
@@ -113,6 +113,7 @@ class ConferenceServer:
         self.running = True
         self.data = None
         self.sharing_user = None # (addr, port)
+        self.user_list = []
 
     async def handle_data(self, reader, writer, data_type):
         addr = writer.get_extra_info('peername')
@@ -261,6 +262,14 @@ class ConferenceServer:
         writer.close()
         await writer.wait_closed()
 
+    async def add_user(self, user_name):
+        self.user_list.append(user_name)
+        print(f'User {user_name} added to conference {self.conference_id}\n', 'User list:', self.user_list)
+    
+    async def remove_user(self, user_name):
+        self.user_list.remove(user_name)
+        print(f'User {user_name} removed from conference {self.conference_id}\n', 'User list:', self.user_list)
+
 class MainServer:
     def __init__(self, server_ip, main_port):
         self.server_ip = server_ip
@@ -268,7 +277,7 @@ class MainServer:
         self.conference_servers = {}
         self.next_conference_id = 1
 
-    async def handle_create_conference(self, _, writer):
+    async def handle_create_conference(self, _, writer, user_name):
         conference_id = self.next_conference_id
         self.next_conference_id += 1
 
@@ -288,17 +297,20 @@ class MainServer:
         self.conference_servers[conference_id] = conference_server
 
         response = f'CREATE_OK {conference_id} {conf_serve_port} {data_serve_ports}\n'
+        # add user to conference
+        await conference_server.add_user(user_name)
         writer.write(response.encode())
         await writer.drain()
         print(f'Conference {conference_id} created')
         writer.close()
         await writer.wait_closed()
 
-    async def handle_join_conference(self, _, writer, conference_id):
+    async def handle_join_conference(self, _, writer, conference_id, user_name):
         print(f'Joining conference {conference_id}')
         if conference_id in self.conference_servers:
             conference_server = self.conference_servers[conference_id]
             response = f'JOIN_OK {conference_id} {conference_server.conf_serve_port} {conference_server.data_serve_ports}\n'
+            await conference_server.add_user(user_name)
             writer.write(response.encode())
             await writer.drain()
         else:
@@ -346,20 +358,35 @@ class MainServer:
             writer.close()
             await writer.wait_closed()
 
+    async def handle_quit_conference(self, _, writer, conference_id, user_name):
+        print(f'Quitting conference {conference_id}')
+        print (self.conference_servers)
+        if conference_id in self.conference_servers:
+            print(f'Quitting conference {conference_id}')
+            conference_server = self.conference_servers[conference_id]
+            await conference_server.remove_user(user_name)
+            writer.write('QUIT_OK\n'.encode())
+            await writer.drain()
+        else:
+            writer.write('ERROR Conference not found\n'.encode())
+            await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
     async def request_handler(self, reader, writer):
         data = await reader.readline()
         message = data.decode().strip()
         print(f'Received: {message}')
-        if message == 'CREATE_CONFERENCE':
-            await self.handle_create_conference(reader, writer)
+        if message.startswith('CREATE_CONFERENCE'):
+            _, user_name = message.split()
+            await self.handle_create_conference(reader, writer, user_name)
             # asyncio.create_task(self.handle_create_conference(reader, writer))
         elif message.startswith('JOIN_CONFERENCE'):
-            _, conf_id = message.split()
-            await self.handle_join_conference(reader, writer, int(conf_id))
-        # elif message == 'QUIT':
-        #     await self.stop_all_conferences()
-        #     writer.close()
-        #     await writer.wait_closed()
+            _, conf_id, user_name = message.split()
+            await self.handle_join_conference(reader, writer, int(conf_id), user_name)
+        elif message.startswith('QUIT_CONFERENCE'):
+            _, conf_id, user_name = message.split()
+            await self.handle_quit_conference(reader, writer, int(conf_id), user_name)
         elif message.startswith('CANCEL_CONFERENCE'):
             _, conf_id = message.split()
             await self.handle_cancel_conference(reader, writer, int(conf_id))

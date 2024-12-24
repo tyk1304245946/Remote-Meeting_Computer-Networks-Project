@@ -46,7 +46,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data, addr):
-        print(f"Received data from {addr}")
+        # print(f"Received data from {addr}")
         # RTP头12字节
         header = data[:12]
         payload = data[12:]
@@ -83,7 +83,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
     async def send_rtp_packet(self, payload, chunk_index, total_chunks):
         """构建并发送 RTP 数据包，支持分块传输"""
         version = 2
-        payload_type = 26  # JPEG
+        payload_type = 10 if self.datatype == 'audio' else 26
         sequence_number = self.frame_number
         timestamp = self.frame_number * 3000  # 时间戳示例
         ssrc = 12345  # 同步源 SSRC
@@ -109,6 +109,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         self.frame_number += 1
 
     async def stream_data(self):
+        print(f"Start streaming {self.datatype} data")
         while True:
             payload = self.capture_function()
             if self.compress:
@@ -155,8 +156,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             if 'audio' in self.share_data:
                 audio_data = self.share_data['audio']
                 play_audio(audio_data)
-
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.02)
 
 class ConferenceClient:
     def __init__(self):
@@ -168,6 +168,7 @@ class ConferenceClient:
         self.data_serve_ports = {}
         # self.recv_tasks = []
         # self.send_tasks = []
+        self.tasks = []
         self.data_server = []
         # 连接服务器
         # self.loop = asyncio.get_event_loop()
@@ -228,112 +229,12 @@ class ConferenceClient:
         else:
             print('No conference to cancel')
 
-    # async def keep_share(self, data_type, port, capture_function, compress=None, fps=1):
-        # client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
-        # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
-        # client_socket.sendto(b'Hello', (SERVER_IP, port))
-        # print(f'Start sharing {data_type} on port {port}')
-
-
-        # async def pack_chunk(chunk_index, total_chunks, chunk_data):
-        #     # Use struct to pack chunk_index and total_chunks as unsigned integers (4 bytes each)
-        #     # Then append the chunk_data (already in bytes)
-        #     header = struct.pack('!II', chunk_index, total_chunks)  # '!II' means two unsigned integers in network byte order
-        #     return header + chunk_data  # Concatenate header with chunk data
-
-        # try:
-        #     while self.on_meeting:
-        #         data = capture_function()
-        #         if compress:
-        #             data = compress(data)
-
-        #         # Split data into chunks
-        #         data_chunks = [data[i:i + MAX_UDP_PACKET_SIZE] for i in range(0, len(data), MAX_UDP_PACKET_SIZE)]
-        #         total_chunks = len(data_chunks)
-
-        #         print(total_chunks)
-        #         for i, chunk in enumerate(data_chunks):
-        #             # Add metadata to each chunk: (chunk_index, total_chunks)
-        #             print(i)
-        #             chunk_with_metadata = await pack_chunk(i, total_chunks, chunk)
-        #             client_socket.sendto(chunk_with_metadata, (SERVER_IP, port))
-        #         print(f'Sent {data_type} on port {port}')
-
-        #         await asyncio.sleep(1 / fps)
-
-        #         print(2)
-        # except Exception as e:
-        #     print(e)
-        # # except asyncio.CancelledError:
-        # #     pass
-        # finally:
-        #     print(self.on_meeting)
-        #     print(f'Stop sharing {data_type} on port {port}')
-        #     client_socket.close()
-
     ## todo: implement this function
     def share_switch(self, data_type):
         '''
         switch for sharing certain type of data (screen, camera, audio, etc.)
         '''
         pass
-
-    # async def handle_received_chunk(self, data, data_type):
-    #     # Extract metadata: chunk_index, total_chunks, chunk_data
-    #     chunk_index, total_chunks, chunk_data = data
-
-    #     if data_type not in self.received_chunks:
-    #         self.received_chunks[data_type] = {}
-
-    #     # Store the chunk data
-    #     self.received_chunks[data_type][chunk_index] = chunk_data
-
-    #     # Check if all chunks for this data_type have been received
-    #     if len(self.received_chunks[data_type]) == total_chunks:
-    #         # Reassemble the data by combining the chunks in order
-    #         all_data = b''.join(self.received_chunks[data_type][i] for i in range(total_chunks))
-
-    #         # Handle the reassembled data (e.g., process or store it)
-    #         print(f'Reassembled data for {data_type}: {all_data}')
-
-    #         # Clear the chunks for this data_type after reassembly
-    #         del self.received_chunks[data_type]
-
-    # async def keep_recv(self, data_type, port, decompress=None):
-    #     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    #     # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    #     # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)  # 64 KB buffer size
-    #     # client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64 KB buffer size
-    #     client_socket.sendto(b'Hello', (SERVER_IP, port))
-    #     print(f'Start receiving {data_type} on port {port}')
-
-    #     try:
-    #         while self.on_meeting:
-    #             packet, _ = client_socket.recvfrom(65536)
-
-    #             # RTP头12字节
-    #             header = packet[:12]
-    #             payload = packet[12:]
-
-    #             # 解析RTP头
-    #             rtp_header = struct.unpack('!BBHII', header)
-    #             version = (rtp_header[0] >> 6) & 0x03
-    #             pt = rtp_header[1] & 0x7F
-    #             seq = rtp_header[2]
-    #             timestamp = rtp_header[3]
-
-    #             print(f"Recv RTP Packet: version={version}, payload_type={pt}, seq={seq}, timestamp={timestamp}, payload_size={len(payload)}")
-
-    #             if decompress:
-    #                 payload = decompress(payload)
-    #             self.share_data[data_type] = payload
-    #     except asyncio.CancelledError:
-    #         pass
-    #     finally:
-    #         print(f'Stop receiving {data_type} on port {port}')
-    #         client_socket.close()
 
     async def start_conference(self):
         # 启动数据接收和发送任务
@@ -346,7 +247,6 @@ class ConferenceClient:
                                                     if data_type == 'screen' else capture_camera,
                                                 compress=compress_image,
                                                 decompress=decompress_image)
-                await data_server.start_client()
                 # send_task = asyncio.create_task(self.keep_share(
                 #     data_type, port,
                     # capture_function=capture_screen if data_type == 'screen' else capture_camera,
@@ -354,6 +254,7 @@ class ConferenceClient:
                 # recv_task = asyncio.create_task(self.keep_recv(
                 #     data_type, port, decompress=decompress_image))
             elif data_type == 'audio':
+                print(f'Start sharing {data_type} on port {port}')
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
                                                 data_type,
                                                 capture_function=capture_voice)
@@ -361,20 +262,16 @@ class ConferenceClient:
                 #     data_type, port, capture_function=capture_voice))
                 # recv_task = asyncio.create_task(self.keep_recv(
                 #     data_type, port))
+                # await data_server.start_client()
+            self.tasks.append(asyncio.create_task(data_server.start_client()))
             self.data_server.append(data_server)
+        
+        await asyncio.gather(*self.tasks)
 
             # self.send_tasks.append(send_task)
             # self.recv_tasks.append(recv_task)
-        while self.on_meeting:
-            await asyncio.sleep(1)
-
-        # 启动输出任务
-        # output_task = asyncio.create_task(self.output_data())
-        # self.recv_tasks.append(output_task)
-
-        # tasks = self.recv_tasks + self.send_tasks
-        # await asyncio.gather(*tasks)
-
+        # while self.on_meeting:
+        #     await asyncio.sleep(1)
 
     async def start(self):
         while True:

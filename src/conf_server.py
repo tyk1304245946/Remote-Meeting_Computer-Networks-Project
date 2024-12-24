@@ -34,6 +34,7 @@ class ConferenceServer:
         self.data_types = list(data_serve_ports.keys())
         self.clients_info = {}  # {client_addr: writer}
         self.client_conns = {}  # {data_type: {client_addr: writer}}
+        self.tasks = []
         self.running = True
 
     # async def handle_data(self, data_type, server_socket):
@@ -102,7 +103,9 @@ class ConferenceServer:
             data_server = RTPServer(SERVER_IP, port)
             await data_server.start_server()
             data_server_sockets[data_type] = data_server.transport
+            self.tasks.append(asyncio.create_task(data_server.start_server()))
             print(f'RTP Data server for {data_type} started on port {port}')
+        await asyncio.gather(*self.tasks)
 
         # Start conference server and data servers handling in parallel
         # tasks = [
@@ -131,8 +134,8 @@ class MainServer:
         conf_serve_port = MAIN_SERVER_PORT + conference_id * 10
         data_serve_ports = {
             'screen': conf_serve_port + 1,
-            'camera': conf_serve_port + 2,
-            # 'audio': conf_serve_port + 3,
+            # 'camera': conf_serve_port + 2,
+            'audio': conf_serve_port + 3,
         }
 
         # 创建并启动 ConferenceServer

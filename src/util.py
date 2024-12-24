@@ -10,15 +10,13 @@ import pyautogui
 import numpy as np
 from PIL import Image, ImageGrab, UnidentifiedImageError
 from config import *
-import mss
-import mss.tools
 
 
 # audio setting
-# FORMAT = pyaudio.paInt16
-# audio = pyaudio.PyAudio()
-# streamin = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
-# streamout = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, output=True, frames_per_buffer=CHUNK)
+FORMAT = pyaudio.paInt16
+audio = pyaudio.PyAudio()
+streamin = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+streamout = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, output=True, frames_per_buffer=CHUNK)
 
 # print warning if no available camera
 cap = cv2.VideoCapture(0)
@@ -81,7 +79,7 @@ def overlay_camera_images(screen_image, camera_images):
             adjusted_camera_width = screen_width // len(camera_images)
             adjusted_camera_height = (adjusted_camera_width * camera_height) // camera_width
             camera_images = [img.resize((adjusted_camera_width, adjusted_camera_height), Image.LANCZOS) for img in
-                             camera_images]
+                                camera_images]
             camera_width, camera_height = adjusted_camera_width, adjusted_camera_height
             num_cameras_per_row = len(camera_images)
 
@@ -108,16 +106,6 @@ def capture_screen():
     screen_image = np.array(screen)
     screen_image = cv2.resize(screen_image, (1920, 1080), interpolation=cv2.INTER_AREA)
     return screen_image
-
-
-# def capture_camera():
-#     # capture frame of camera
-#     ret, frame = cap.read()
-#     if not ret:
-#         raise Exception('Fail to capture frame from camera')
-#     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-#     camera_image = Image.fromarray(frame)
-#     return camera_image
 
 def capture_camera():
     # capture frame of camera

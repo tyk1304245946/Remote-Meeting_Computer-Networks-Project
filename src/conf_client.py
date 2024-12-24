@@ -167,13 +167,14 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             await asyncio.sleep(1 / self.fps)
 
 class RTCPClientProtocol(asyncio.DatagramProtocol):
-    def __init__(self, host, port, conference_id, username, share_data):
+    def __init__(self, host, port, conference_id, username, share_data, user_list, conference_client):
         self.host = host
         self.port = port
         self.transport = None
         self.share_data = share_data
         self.conference_id = conference_id
         self.username = username
+        self.conference_client = conference_client
 
     async def start_client(self):
         loop = asyncio.get_event_loop()
@@ -185,7 +186,8 @@ class RTCPClientProtocol(asyncio.DatagramProtocol):
         self.transport.sendto(f'RTCP_HELLO {self.conference_id} {self.username}'.encode())
 
     def datagram_received(self, data, addr):
-        print(f"Received {data} from {addr}")
+        self.conference_client.user_list = data.decode().strip().split(' ')
+        print(f"Received user list: {self.conference_client.user_list}")
 
 class ConferenceClient:
     def __init__(self):
@@ -206,6 +208,7 @@ class ConferenceClient:
         self.username = USER_NAME+str(randint(1000, 9999))
         self.text_reader = None
         self.text_writer = None
+        self.user_list = []
         # self.gui = self.GUIClient(self)
 
     async def create_conference(self):
@@ -386,7 +389,7 @@ class ConferenceClient:
                 recv_task = asyncio.create_task(self.recv_text())
                 self.tasks.append(recv_task)
             elif data_type == 'control':
-                data_server = RTCPClientProtocol(SERVER_IP, port, self.conference_id, self.username, self.share_data)
+                data_server = RTCPClientProtocol(SERVER_IP, port, self.conference_id, self.username, self.share_data, self.user_list, self)
 
             if data_type != 'text':
                 self.tasks.append(asyncio.create_task(data_server.start_client()))
@@ -402,6 +405,7 @@ class ConferenceClient:
         writer = self.text_writer
         writer.write(text.encode())
         print(f'text_me: {text}')
+        print("****", self.user_list)
         # await writer.drain()
         # writer.close()
         # await writer.wait_closed()

@@ -66,12 +66,13 @@ class RTPScreenServer(asyncio.DatagramProtocol):
                 transport.sendto(data, client_addr)
 
 class RTCPServer(asyncio.DatagramProtocol):
-    def __init__(self, host, port, client_conns):
+    def __init__(self, host, port, client_conns, user_list):
         self.host = host
         self.port = port
         self.client_conns = client_conns
         self.transport = None
         self.client_address = []
+        self.user_list = user_list
 
     async def start_server(self):
         loop = asyncio.get_running_loop()
@@ -84,14 +85,8 @@ class RTCPServer(asyncio.DatagramProtocol):
 
     async def send_message(self):
         while True:
-            # print(self.client_conns)
-            if self.client_conns != {}:
-                client_num = len(self.client_conns['text'])
-            else:
-                client_num = 0
+            message = " ".join(self.user_list)
             for addr in self.client_address:
-                message = f"Client_nums: {client_num}\n"
-                # print(f"Sending RTCP message to {addr}: {message}")
                 self.transport.sendto(message.encode(), addr)
             await asyncio.sleep(2)
 
@@ -203,7 +198,7 @@ class ConferenceServer:
                 self.tasks.append(asyncio.create_task(data_server.start_server()))
                 print(f'RTP Screen server for {data_type} started on port {port}')
             elif data_type == 'control':
-                data_server = RTCPServer(SERVER_IP, port, self.client_conns)
+                data_server = RTCPServer(SERVER_IP, port, self.client_conns, self.user_list)
                 data_server_sockets[data_type] = data_server.transport
                 self.tasks.append(asyncio.create_task(data_server.start_server()))
                 print(f'RTCP server for {data_type} started on port {port}')

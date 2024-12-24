@@ -11,6 +11,9 @@ import string
 from datetime import datetime
 from config import *
 from random import randint
+import asyncio
+from tkinter import Tk, Label, Entry, Button, Text, StringVar, END
+from datetime import datetime
 
 class RTPClientProtocol(asyncio.DatagramProtocol):
     def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=10, decompress=None, share_data=None):
@@ -183,6 +186,7 @@ class ConferenceClient:
         self.username = USER_NAME+str(randint(0, 9999))
         self.text_reader = None
         self.text_writer = None
+        # self.gui = self.GUIClient(self)
 
     async def create_conference(self):
         reader, writer = await asyncio.open_connection(*self.server_addr)
@@ -300,6 +304,26 @@ class ConferenceClient:
         writer.close()
         await writer.wait_closed()
 
+    # 请求分享屏幕
+    async def share_conference(self):
+        # 列出会议
+        if not self.on_meeting:
+            print('Not in a conference')
+            return
+        reader, writer = await asyncio.open_connection(*self.server_addr)
+        # writer.write(('SHARE_CONFERENCE '+str(self.conference_id)).encode())
+        writer.write(f'SHARE_CONFERENCE {self.conference_id} {self.username}\n'.encode())
+        await writer.drain()
+        data = await reader.readline()
+        message = data.decode().strip()
+        print('Message: ', message)
+        if message.startswith('SHARE_OK'):
+            print(f'Sharing screen')
+        elif message.startswith('SHARE_STOP'):
+            print(f'Stop sharing screen')
+        else:
+            print('Failed to share screen')
+
     ## todo: implement this function
     def share_switch(self, data_type):
         '''
@@ -380,7 +404,7 @@ class ConferenceClient:
                 status = f'OnMeeting-{self.conference_id}'
 
             recognized = True
-            print(f'({status}) Please enter a operation (enter "?" to help): ')
+            print(f'{self.username}({status}) Please enter a operation (enter "?" to help): ')
             cmd_input = await loop.run_in_executor(None, input)
             cmd_input = cmd_input.strip().lower()
             # cmd_input = input(f'({status}) Please enter a operation (enter "?" to help): ')
@@ -396,6 +420,8 @@ class ConferenceClient:
                     await self.cancel_conference()
                 elif cmd_input == 'list':
                     await self.list_conference()
+                elif cmd_input == 'screen':
+                    await self.share_conference()
                 else:
                     recognized = False
             elif len(fields) == 2 and fields[0] != 'text':
@@ -424,6 +450,97 @@ class ConferenceClient:
 
             if not recognized:
                 print(f'[Warn]: Unrecognized cmd_input {cmd_input}')
+
+    # async def start(self):
+    #     # Start the GUI and the asyncio loop
+    #     await self.gui.start()
+
+    # class GUIClient:
+    #     def __init__(self, client_instance):
+    #         self.client = client_instance  # Reference to the ConferenceClient instance
+    #         self.username = client_instance.username
+    #         self.on_meeting = client_instance.on_meeting
+    #         self.conference_id = client_instance.conference_id
+    #         self.root = Tk()
+    #         self.root.title("Client GUI")
+
+    #         # Create GUI components
+    #         self.status_label = Label(self.root, text=f"Status: Free")
+    #         self.status_label.pack()
+
+    #         self.input_label = Label(self.root, text="Enter a command (enter '?' for help):")
+    #         self.input_label.pack()
+
+    #         self.input_var = StringVar()
+    #         self.input_entry = Entry(self.root, textvariable=self.input_var)
+    #         self.input_entry.pack()
+
+    #         self.send_button = Button(self.root, text="Send", command=self.handle_input)
+    #         self.send_button.pack()
+
+    #         self.output_text = Text(self.root, height=20, width=50)
+    #         self.output_text.pack()
+
+    #     def update_status(self):
+    #         status = f"OnMeeting-{self.client.conference_id}" if self.client.on_meeting else "Free"
+    #         self.status_label.config(text=f"Status: {status}")
+
+    #     def log_output(self, message):
+    #         self.output_text.insert(END, message + "\n")
+    #         self.output_text.see(END)
+
+    #     async def start(self):
+    #         self.log_output(f"Client started, your username is: {self.username}")
+    #         self.root.mainloop()
+
+    #     def handle_input(self):
+    #         cmd_input = self.input_var.get().strip().lower()
+    #         self.input_var.set("")
+            
+    #         recognized = True
+    #         fields = cmd_input.split(maxsplit=1)
+
+    #         if len(fields) == 1:
+    #             if cmd_input in ('?', '？'):
+    #                 self.log_output("Help: Available commands are create, quit, cancel, list, share, join <id>, text <message>")
+    #             elif cmd_input == 'create':
+    #                 asyncio.create_task(self.client.create_conference())
+    #             elif cmd_input == 'quit':
+    #                 asyncio.create_task(self.client.quit_conference())
+    #             elif cmd_input == 'cancel':
+    #                 asyncio.create_task(self.client.cancel_conference())
+    #             elif cmd_input == 'list':
+    #                 asyncio.create_task(self.client.list_conference())
+    #             elif cmd_input == 'share':
+    #                 asyncio.create_task(self.client.share_conference())
+    #             else:
+    #                 recognized = False
+
+    #         elif len(fields) == 2 and fields[0] != 'text':
+    #             if fields[0] == 'join':
+    #                 input_conf_id = fields[1]
+    #                 if input_conf_id.isdigit():
+    #                     asyncio.create_task(self.client.join_conference(int(input_conf_id)))
+    #                 else:
+    #                     self.log_output('[Warn]: Input conference ID must be in digital form')
+    #             else:
+    #                 recognized = False
+
+    #         elif fields[0] == 'text':
+    #             if len(fields) >= 2:
+    #                 text = ''
+    #                 for i in range(1, len(fields)):
+    #                     text += ' ' + fields[i]
+    #                 timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    #                 full_message = f'[{timestamp}] {self.username}: {text}\n'
+    #                 asyncio.create_task(self.client.send_text(full_message))
+    #             else:
+    #                 recognized = False
+    #         else:
+    #             recognized = False
+
+    #         if not recognized:
+    #             self.log_output(f'[Warn]: Unrecognized cmd_input {cmd_input}')
 
 
 if __name__ == '__main__':

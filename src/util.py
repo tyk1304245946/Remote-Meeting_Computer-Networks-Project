@@ -7,11 +7,13 @@ from io import BytesIO
 import pyaudio
 import cv2
 import pyautogui
+import struct
 import numpy as np
 from PIL import Image, ImageGrab, UnidentifiedImageError
 from config import *
 import subprocess
 from PIL import Image
+import ffmpeg
 
 
 # audio setting
@@ -29,7 +31,10 @@ if cap.isOpened():
 else:
     can_capture_camera = False
 
-my_screen_size = pyautogui.size()
+# my_screen_size = pyautogui.size()
+
+# 1920x1080
+my_screen_size = (1920, 1080)
 
 
 def resize_image_to_fit_screen(image, my_screen_size):
@@ -150,7 +155,7 @@ def decompress_image(image_bytes):
         return None
     return image
 
-def compress_screen(frame, quality=50):
+def compress_screen(frame, quality=28):
     """
     Compress image using ffmpeg's h.264 encoding and output bytes.
 
@@ -164,59 +169,42 @@ def compress_screen(frame, quality=50):
     height, width, _ = raw_image.shape
     raw_bytes = raw_image.tobytes()
 
-    # ffmpeg command for h.264 encoding
-    ffmpeg_cmd = [
-        'ffmpeg',
-        '-y',
-        '-f', 'rawvideo',
-        '-pixel_format', 'rgb24',
-        '-video_size', f'{width}x{height}',
-        '-i', 'pipe:0',
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-crf', str(quality),
-        '-f', 'h264',
-        'pipe:1'
-    ]
-
-    process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Use ffmpeg-python for h.264 encoding
+    process = (
+        ffmpeg
+        .input('pipe:0', format='rawvideo', pix_fmt='rgb24', s=f'{width}x{height}')
+        .output('pipe:1', vcodec='libx264', crf=quality, preset='veryfast', format='h264')
+        .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True)
+    )
     out, err = process.communicate(input=raw_bytes)
 
     if process.returncode != 0:
         raise Exception(f'FFmpeg encoding failed: {err.decode()}')
 
-    return out
+    # Add width and height to output bytes
+    header = struct.pack('II', width, height)
+    return header + out
 
-def decompress_screen(image_bytes, width=1920, height=1080):
+def decompress_screen(encoded_bytes):
     """
-    Decompress h.264 bytes to PIL.Image.
-
-    :param image_bytes: bytes, compressed image data
-    :param width: int, width of the image
-    :param height: int, height of the image
-    :return: PIL.Image, decompressed image
+    Decode H.264 encoded bytes back to an image without specifying width and height.
     """
+    # 解压前8个字节获取宽度和高度
+    width, height = struct.unpack('II', encoded_bytes[:8])
+    encoded_data = encoded_bytes[8:]
 
-    # ffmpeg command for h.264 decoding
-    ffmpeg_cmd = [
-        'ffmpeg',
-        '-y',
-        '-f', 'h264',
-        '-i', 'pipe:0',
-        '-f', 'rawvideo',
-        '-pixel_format', 'rgb24',
-        '-video_size', f'{width}x{height}',
-        'pipe:1'
-    ]
-
-    process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = process.communicate(input=image_bytes)
+    # Use ffmpeg-python to decode the video
+    process = (
+        ffmpeg
+        .input('pipe:0', format='h264')
+        .output('pipe:1', format='rawvideo', pix_fmt='rgb24', s=f'{width}x{height}')
+        .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True)
+    )
+    out, err = process.communicate(input=encoded_data)
 
     if process.returncode != 0:
-        print("The image file could not be identified:", err.decode())
-        return None
+        raise Exception(f'FFmpeg decoding failed: {err.decode()}')
 
-    # Convert raw bytes to PIL Image
-    image_array = np.frombuffer(out, np.uint8).reshape((height, width, 3))
-    image = Image.fromarray(image_array, 'RGB')
+    raw_image = np.frombuffer(out, np.uint8).reshape((height, width, 3))
+    image = Image.fromarray(raw_image, 'RGB')
     return image

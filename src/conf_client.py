@@ -4,7 +4,10 @@ import socket
 import struct
 from util import *
 from config import *
-
+import string
+from datetime import datetime
+from config import *
+from random import randint
 
 class RTPClientProtocol(asyncio.DatagramProtocol):
     def __init__(self, host, port, conference_id, datatype, capture_function, compress=None, fps=10, decompress=None, share_data=None):
@@ -59,7 +62,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         payload_data = payload[4:]
 
         # Print RTP packet details
-        print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
+        # print(f"Received RTP Packet: chunk_index={chunk_index}, total_chunks={total_chunks}, payload_size={len(payload_data)}")
 
         # Add the chunk to the dictionary
         if chunk_index not in self.frame_chunks:
@@ -71,7 +74,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         if len(self.frame_chunks) == total_chunks:
             # Reassemble all chunks into the full payload (frame)
             full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
-            print(f"Reassembled full frame of size {len(full_frame)} bytes")
+            # print(f"Reassembled full frame of size {len(full_frame)} bytes")
 
             if self.decompress:
                 full_frame = self.decompress(full_frame)
@@ -115,7 +118,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             if self.compress:
                 payload = self.compress(payload)
 
-            print(len(payload))
+            # print(len(payload))
 
             # 如果 payload 超过了最大大小，进行分块传输
             if len(payload) > self.chunk_size:
@@ -156,7 +159,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
             if 'audio' in self.share_data:
                 audio_data = self.share_data['audio']
                 play_audio(audio_data)
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(1 / self.fps)
 
 class ConferenceClient:
     def __init__(self):
@@ -174,6 +177,9 @@ class ConferenceClient:
         # self.loop = asyncio.get_event_loop()
         self.received_chunks = {}
         self.share_data = {}
+        self.username = USER_NAME+str(randint(0, 9999))
+        self.text_reader = None
+        self.text_writer = None
 
     async def create_conference(self):
         reader, writer = await asyncio.open_connection(*self.server_addr)
@@ -188,7 +194,7 @@ class ConferenceClient:
             self.data_serve_ports = eval(data_ports)
             self.on_meeting = True
             print(f'Conference {self.conference_id} created')
-            await self.start_conference()
+            asyncio.create_task(self.start_conference())
         else:
             print('Failed to create conference')
         writer.close()
@@ -205,29 +211,91 @@ class ConferenceClient:
             self.conference_id = int(conf_id)
             self.conf_serve_port = int(conf_port)
             self.data_serve_ports = eval(data_ports)
+            self.text_reader, self.text_writer = await asyncio.open_connection(SERVER_IP, self.data_serve_ports['text'])
             self.on_meeting = True
             print(f'Joined conference {self.conference_id}')
-            await self.start_conference()
+            asyncio.create_task(self.start_conference())
         else:
             print('Failed to join conference')
         writer.close()
         await writer.wait_closed()
 
     async def quit_conference(self):
-        self.on_meeting = False
-        for task in self.recv_tasks + self.send_tasks:
-            task.cancel()
-        print('Quit conference')
-
-    async def cancel_conference(self):
+        # 退出会议
         if self.on_meeting:
             self.on_meeting = False
-            # todo: cancle the conference on server side
-            for task in self.recv_tasks + self.send_tasks:
+            self.conference_id = None
+            self.conf_serve_port = None
+            self.data_serve_ports = {}
+            self.share_data = {}
+
+            for task in self.tasks:
                 task.cancel()
-            print('Conference canceled')
+
+            for data_server in self.data_server:
+                if data_server.transport:
+                    data_server.transport.close()
+            cv2.destroyAllWindows()  # 关闭所有 OpenCV 窗口
+            self.tasks.clear()
+            self.data_server.clear()
+            print('Quit conference')
+        else:
+            print('No conference to quit')
+
+    async def cancel_conference(self):
+        # 取消会议
+        if self.on_meeting:
+            reader, writer = await asyncio.open_connection(*self.server_addr)
+            writer.write(f'CANCEL_CONFERENCE {self.conference_id}\n'.encode())
+            await writer.drain()
+            # print('Waiting for response')###todo: 可能阻塞
+            data = await reader.readline()
+            message = data.decode().strip()
+            print('Message: ', message)
+            if message == 'CANCEL_OK':
+                self.on_meeting = False
+                self.conference_id = None
+                self.conf_serve_port = None
+                self.data_serve_ports = {}
+                self.share_data = {}
+                for task in self.tasks:
+                    task.cancel()
+                for data_server in self.data_server:
+                    if data_server.transport:
+                        data_server.transport.close()
+                cv2.destroyAllWindows()  # 关闭所有 OpenCV 窗口
+                self.tasks.clear()
+                self.data_server.clear()
+                print('Quit conference')
+            else:
+                print('Failed to cancel conference')
+            writer.close()
+            await asyncio.shield(writer.wait_closed())
         else:
             print('No conference to cancel')
+
+    async def list_conference(self):
+        # 列出会议
+        reader, writer = await asyncio.open_connection(*self.server_addr)
+        writer.write('LIST_CONFERENCE\n'.encode())
+        await writer.drain()
+        data = await reader.readline()
+        message = data.decode().strip()
+        print('Message: ', message)
+        if message.startswith('CONFERENCE_LIST'):
+            conf_list = message.split(' ')
+            if len(conf_list) == 1:
+                print('No conference')
+            else:
+                # conf_list = eval(conf_list)
+                conf_list = conf_list[1:]
+                print('Conference List:')
+                for conf in conf_list:
+                    print("Conference", conf)
+        else:
+            print('Failed to list conference')
+        writer.close()
+        await writer.wait_closed()
 
     ## todo: implement this function
     def share_switch(self, data_type):
@@ -238,18 +306,19 @@ class ConferenceClient:
 
     async def start_conference(self):
         # 启动数据接收和发送任务
+        self.text_reader, self.text_writer = await asyncio.open_connection(SERVER_IP, self.data_serve_ports['text'])
         for data_type, port in self.data_serve_ports.items():
             print(f'Start sharing {data_type} on port {port}')
             if data_type == 'screen':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
-                                                data_type, fps=5,
+                                                data_type, fps=15,
                                                 capture_function=capture_screen,
-                                                compress=compress_screen,
-                                                decompress=decompress_screen,
+                                                compress=compress_image,
+                                                decompress=decompress_image,
                                                 share_data=self.share_data)
             elif data_type == 'camera':
                 data_server = RTPClientProtocol(SERVER_IP, port, self.conference_id,
-                                                data_type, fps=10,
+                                                data_type, fps=15,
                                                 capture_function=capture_camera,
                                                 compress=compress_image,
                                                 decompress=decompress_image,
@@ -260,12 +329,47 @@ class ConferenceClient:
                                                 data_type, fps=50,
                                                 capture_function=capture_voice,
                                                 share_data=self.share_data)
+            elif data_type == 'text':
+                recv_task = asyncio.create_task(self.recv_text())
+                self.tasks.append(recv_task)
             self.tasks.append(asyncio.create_task(data_server.start_client()))
             self.data_server.append(data_server)
 
         await asyncio.gather(*self.tasks)
 
+    async def send_text(self, text):
+        # 发送文本消息
+        # print(self.data_serve_ports)
+        # port = self.data_serve_ports['text']
+        # reader, writer = await asyncio.open_connection(SERVER_IP, port)
+        writer = self.text_writer
+        writer.write(text.encode())
+        print(f'text_me: {text}')
+        # await writer.drain()
+        # writer.close()
+        # await writer.wait_closed()
+
+    async def recv_text(self):
+        # 接收文本消息
+        # port = self.data_serve_ports['text']
+        # reader, writer = await asyncio.open_connection(SERVER_IP, port)
+        reader= self.text_reader
+        while self.on_meeting:
+            data = await reader.readline()
+            message = data.decode().strip()
+            if message == 'CONFERENCE_CANCELED':
+                await self.quit_conference()
+                break
+            if len(message) != 0:
+                print("text: "+message)
+            # writer.close()
+            # await writer.wait_closed()
+            await asyncio.sleep(1)
+
     async def start(self):
+        # 启动客户端
+        loop = asyncio.get_event_loop()
+        print("Client started, your username is: ", self.username)
         while True:
             if not self.on_meeting:
                 status = 'Free'
@@ -273,7 +377,10 @@ class ConferenceClient:
                 status = f'OnMeeting-{self.conference_id}'
 
             recognized = True
-            cmd_input = input(f'({status}) Please enter a operation (enter "?" to help): ').strip().lower()
+            print(f'({status}) Please enter a operation (enter "?" to help): ')
+            cmd_input = await loop.run_in_executor(None, input)
+            cmd_input = cmd_input.strip().lower()
+            # cmd_input = input(f'({status}) Please enter a operation (enter "?" to help): ')
             fields = cmd_input.split(maxsplit=1)
             if len(fields) == 1:
                 if cmd_input in ('?', '？'):
@@ -284,9 +391,11 @@ class ConferenceClient:
                     await self.quit_conference()
                 elif cmd_input == 'cancel':
                     await self.cancel_conference()
+                elif cmd_input == 'list':
+                    await self.list_conference()
                 else:
                     recognized = False
-            elif len(fields) == 2:
+            elif len(fields) == 2 and fields[0] != 'text':
                 if fields[0] == 'join':
                     input_conf_id = fields[1]
                     if input_conf_id.isdigit():
@@ -295,6 +404,18 @@ class ConferenceClient:
                         print('[Warn]: Input conference ID must be in digital form')
                 else:
                     recognized = False
+            elif fields[0] == 'text':
+                if len(fields) >= 2:
+                    text = ''
+                    for i in range(1, len(fields)):
+                        text += ' ' + fields[i]
+                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    full_message = f'[{timestamp}] {self.username}: {text}\n'
+                    # print(full_message)
+                    await self.send_text(full_message)
+                else:
+                    recognized = False
+                        
             else:
                 recognized = False
 

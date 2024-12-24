@@ -65,34 +65,26 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
         user_name = USER_NAME + user_info.decode()
         print(f"Received data from {addr}: {user_name}")
 
-        # 初始化用户的frame_chunks
-        if user_name not in self.frame_chunks:
-            self.frame_chunks[user_name] = {}
-
         payload_data = payload[8:]
 
-        # 添加到用户的chunk
-        if chunk_index not in self.frame_chunks[user_name]:
-            self.frame_chunks[user_name][chunk_index] = []
+        # Add the chunk to the dictionary
+        if chunk_index not in self.frame_chunks:
+            self.frame_chunks[chunk_index] = []
 
-        self.frame_chunks[user_name][chunk_index].append(payload_data)
+        self.frame_chunks[chunk_index].append(payload_data)
 
-        # 检查是否收到所有chunks
-        if len(self.frame_chunks[user_name]) == total_chunks:
-            try:
-                # 重组完整帧
-                full_frame = b''.join(b''.join(self.frame_chunks[user_name][i]) for i in range(1, total_chunks + 1))
+        # If we have received all chunks for a frame, reassemble and process the frame
+        if len(self.frame_chunks) == total_chunks:
+            # Reassemble all chunks into the full payload (frame)
+            full_frame = b''.join(b''.join(self.frame_chunks[i]) for i in range(1, total_chunks + 1))
+            # print(f"Reassembled full frame of size {len(full_frame)} bytes")
 
-                if self.decompress:
-                    full_frame = self.decompress(full_frame)
+            if self.decompress:
+                full_frame = self.decompress(full_frame)
+            self.share_data[self.datatype] = full_frame
 
-                self.share_data[self.datatype][user_name] = full_frame
-
-                self.frame_chunks[user_name].clear()
-                print(f"Processed full frame for user: {user_name}, size: {len(full_frame)} bytes")
-            except Exception as e:
-                print(f"Error processing frame for user {user_name}: {e}")
-                self.frame_chunks[user_name].clear()
+            # Clear the frame chunks for the next frame
+            self.frame_chunks.clear()
 
     async def send_rtp_packet(self, payload, chunk_index, total_chunks):
         """构建并发送 RTP 数据包，支持分块传输"""
@@ -159,7 +151,7 @@ class RTPClientProtocol(asyncio.DatagramProtocol):
                 # 显示接收到的数据
                 print(self.share_data)
                 if 'screen' in self.share_data:
-                    screen_image = self.share_data['screen'][user]
+                    screen_image = self.share_data['screen']
                 else:
                     screen_image = None
                 if 'camera' in self.share_data:
